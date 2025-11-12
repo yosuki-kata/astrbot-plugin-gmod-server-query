@@ -298,10 +298,12 @@ class GModServerQuery(Star):
         super().__init__(context)
         self.config = config
         self.servers = {}  # 别名 -> {"ip": str, "port": int}
+        self.groups = {}  # 组名 -> [别名, ...]（一个别名可属于多个组）
         self._legacy_t2i_warned = False  # 旧 T2I 配置迁移提示只打一次
         self.data_file = self._resolve_data_file()
         self._migrate_legacy_data()
         self._load()
+        self._warn_name_conflicts()
 
     # ==================== 配置读取 ====================
     def _cfg(self, key, default):
@@ -325,9 +327,32 @@ class GModServerQuery(Star):
 
     def _listen_enabled(self) -> bool:
         return bool(self._cfg("enable_listen", Config.ENABLE_LISTEN))
-
     def _listen_group_only(self) -> bool:
         return bool(self._cfg("listen_only_group", Config.LISTEN_ONLY_GROUP))
+
+    # ---------- 群聊白名单 ----------
+    def _whitelist_groups(self) -> list:
+        """解析白名单群号配置，支持逗号/中文逗号/换行/空格分隔。留空返回空列表（表示不限制）。"""
+        raw = self._cfg("whitelist_groups", "")
+        if not raw:
+            return []
+        if isinstance(raw, (list, tuple)):
+            items = [str(x) for x in raw]
+        else:
+            text = str(raw).replace("\r", "\n").replace("，", ",").replace(" ", ",").replace("\n", ",")
+            items = text.split(",")
+        return [s.strip() for s in items if s and s.strip()]
+
+    def _group_allowed(self, event) -> bool:
+        """判断当前消息所在群是否被允许。私聊始终允许；白名单为空时全部允许。"""
+        group_id = str(getattr(event.message_obj, "group_id", None) or "").strip()
+        if not group_id:
+            return True  # 私聊不受限制
+        wl = self._whitelist_groups()
+        if not wl:
+            return True  # 未配置白名单 → 所有群可用
+        return group_id in wl
+
 
     def _exact_match(self) -> bool:
         return bool(self._cfg("listen_exact_match", Config.LISTEN_EXACT_MATCH))
@@ -459,27 +484,59 @@ class GModServerQuery(Star):
             logger.warning(f"[gmod] servers.json 迁移失败: {e}")
 
     def _load(self):
-        """从 servers.json 加载数据。文件缺失或损坏时静默重置。"""
+        """从 servers.json 加载数据。文件缺失或损坏时静默重置。
+
+        兼容两种格式：
+          - 旧格式（扁平）：{"别名": {"ip": ..., "port": ...}, ...}
+          - 新格式：{"servers": {...}, "groups": {...}}
+        """
         if not os.path.exists(self.data_file):
             return
         try:
             with open(self.data_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            if isinstance(data, dict):
-                self.servers = data
-            else:
+            if not isinstance(data, dict):
                 self.servers = {}
+                self.groups = {}
+                return
+
+            if "servers" in data and isinstance(data.get("servers"), dict):
+                # 新格式
+                self.servers = data.get("servers") or {}
+                groups = data.get("groups")
+                self.groups = groups if isinstance(groups, dict) else {}
+            else:
+                # 旧格式：整个 dict 就是 servers
+                self.servers = data
+                self.groups = {}
+                logger.info("[gmod] 检测到旧版 servers.json 格式，已自动兼容（下次保存将转为新格式）")
         except Exception as e:
             logger.error(f"加载 servers.json 失败: {e}")
             self.servers = {}
+            self.groups = {}
 
     def _save(self):
-        """保存数据到 servers.json。"""
+        """保存数据到 servers.json（新格式，含服务器与分组）。"""
         try:
+            payload = {"servers": self.servers, "groups": self.groups}
             with open(self.data_file, "w", encoding="utf-8") as f:
-                json.dump(self.servers, f, ensure_ascii=False, indent=2)
+                json.dump(payload, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.error(f"保存 servers.json 失败: {e}")
+
+    def _warn_name_conflicts(self):
+        """启动自检：别名与组名不允许同名。
+
+        正常操作已拦截重名，这里兜底历史数据或被手动编辑过的 servers.json。
+        发现冲突只告警不删除数据，避免误删用户配置。
+        """
+        conflicts = [n for n in self.servers if n in self.groups]
+        if conflicts:
+            detail = "、".join(f"[{n}]" for n in conflicts)
+            logger.warning(
+                f"[gmod] 检测到服务器别名与服务器组重名: {detail}。"
+                f"查询时将以服务器别名优先；建议用 /gmod-admin remove 或 /gmod-admin delgroup 消除冲突。"
+            )
 
     # ==================== 地址判断 ====================
     @staticmethod
@@ -1389,7 +1446,43 @@ class GModServerQuery(Star):
         lines = [f"📋 已保存的服务器 ({len(self.servers)} 个):"]
         for alias, srv in self.servers.items():
             lines.append(f"  • [{alias}] {srv['ip']}:{srv['port']}")
+        if self.groups:
+            lines.append("")
+            lines.append(f"📁 服务器组 ({len(self.groups)} 个):")
+            for gname, members in self.groups.items():
+                lines.append(f"  • [{gname}] {len(members)} 台")
+            lines.append("")
+            lines.append("用 /gmod list <组名> 查看组内服务器。")
         lines.append("\n在群里发送 [服务器列表] 可查看列表渲染图。")
+        return "\n".join(lines)
+
+    def _group_list_text(self, group_name: str) -> str:
+        """输出指定组内的服务器列表（含实时在线状态）。"""
+        if not self.groups:
+            return ("📭 暂无任何服务器组。\n"
+                    "可用 /gmod-admin setgroup <组名> 创建组，再用 /gmod-admin addgroup <组名> <别名> 添加成员。")
+        if group_name not in self.groups:
+            names = "、".join(self.groups.keys()) or "（无）"
+            return f"❌ 未找到服务器组 [{group_name}]。\n现有组: {names}"
+
+        members = self.groups.get(group_name) or []
+        if not members:
+            return f"📁 服务器组 [{group_name}] 内暂无服务器。"
+
+        lines = [f"📁 服务器组 [{group_name}]（{len(members)} 台）:"]
+        missing = []
+        for alias in members:
+            srv = self.servers.get(alias)
+            if srv is None:
+                missing.append(alias)
+                continue
+            lines.append(f"  • [{alias}] {srv['ip']}:{srv['port']}")
+        if missing:
+            lines.append("")
+            lines.append(f"⚠️ 以下别名已不存在（可能被删除）: {'、'.join(missing)}")
+            lines.append("可用 /gmod-admin kickgroup 移除它们。")
+        lines.append("")
+        lines.append("直接发送别名或 /gmod <别名> 可查询详情。")
         return "\n".join(lines)
 
     @staticmethod
@@ -1445,13 +1538,16 @@ class GModServerQuery(Star):
         listen = "✅ 已开启" if self._listen_enabled() else "❌ 已关闭"
         render = "✅ 已开启" if self._render_enabled() else "❌ 已关闭"
         return (
-            "🎮 GMod 服务器查询插件 v1.2\n"
+            "🎮 GMod 服务器查询插件 v1.2.1\n"
             "──────────────────────────\n"
             "所有成员可用:\n"
             "  /gmod <IP> [端口]   直接查询\n"
             "  /gmod <别名>        查询已保存的服务器\n"
             "  /gmod list          查看服务器列表（渲染图）\n"
+            "  /gmod list <组名>   查看指定服务器组\n"
+            "  /mio                语音小彩蛋\n"
             "  群内发送 <别名>      直接发别名自动查询（消息监听）\n"
+            "  群内发送 <组名>      直接发组名查看组内服务器（消息监听）\n"
             "  群内发送 [服务器列表]  自动生成列表渲染图\n"
             f"  （消息监听: {listen}｜列表渲染: {render}）\n"
             "\n"
@@ -1459,6 +1555,12 @@ class GModServerQuery(Star):
             "  /gmod-admin add <别名> <IP> [端口]  添加\n"
             "  /gmod-admin remove <别名>            删除\n"
             "  /gmod-admin list                    列表现存服务器\n"
+            "\n"
+            "服务器组(管理员):\n"
+            "  /gmod-admin setgroup <组名>           创建空组\n"
+            "  /gmod-admin addgroup <组名> <别名>    加入组\n"
+            "  /gmod-admin kickgroup <组名> <别名>   移出组\n"
+            "  /gmod-admin delgroup <组名>           删除组\n"
             "\n"
             f"默认端口: {self._default_port()} | /gmod help 查看本帮助"
         )
@@ -1469,6 +1571,9 @@ class GModServerQuery(Star):
         """监听所有消息：命中已保存别名则返回服务器信息；命中列表关键词则生成渲染图。"""
         if not self._listen_enabled():
             return
+
+        if not self._group_allowed(event):
+            return  # 不在白名单群内，静默忽略
 
         message_str = event.message_str.strip()
         if not message_str or message_str.startswith("/"):
@@ -1497,7 +1602,7 @@ class GModServerQuery(Star):
                 )
             return
 
-        # 2) 匹配服务器别名
+        # 2) 匹配服务器别名（优先级高于组名）
         hit = None
         if self._exact_match():
             if message_str in self.servers:
@@ -1508,16 +1613,62 @@ class GModServerQuery(Star):
                     hit = alias
                     break
 
-        if hit is None:
+        if hit is not None:
+            srv = self.servers[hit]
+            yield await self._reply_detail(event, hit, srv["ip"], srv["port"])
+            return
+
+        # 3) 匹配服务器组名（别名未命中时才查组，避免与同名的别名冲突）
+        ghit = None
+        if self._exact_match():
+            if message_str in self.groups:
+                ghit = message_str
+        else:
+            for gname in self.groups:
+                if gname in message_str:
+                    ghit = gname
+                    break
+
+        if ghit is None:
             return  # 静默忽略
 
-        srv = self.servers[hit]
-        yield await self._reply_detail(event, hit, srv["ip"], srv["port"])
+        # 组内实存服务器（过滤已被删除的别名）
+        members = [a for a in (self.groups.get(ghit) or []) if a in self.servers]
+        if not members:
+            yield event.plain_result(
+                f"📁 服务器组 [{ghit}] 内暂无可用服务器。\n"
+                f"可用 /gmod-admin addgroup {ghit} <别名> 添加成员。"
+            )
+            return
+
+        # 组名监听 → 渲染该组服务器列表图；渲染不可用或失败时回退文字
+        if self._render_enabled():
+            try:
+                tasks = [self._query_one(a, self.servers[a]["ip"], self.servers[a]["port"])
+                         for a in members]
+                results = await asyncio.gather(*tasks)
+                url = await self._render_list_image_from(results)
+                yield event.image_result(url)
+                return
+            except Exception as e:
+                logger.error(f"服务器组 [{ghit}] 列表渲染失败，回退文字: {e}")
+                yield event.plain_result(
+                    self._group_list_text(ghit) + "\n" + self._render_fail_hint(e)
+                )
+                return
+
+        yield event.plain_result(self._group_list_text(ghit))
 
     # ==================== 主指令 /gmod ====================
     @filter.command("gmod", alias={"GMOD", "服务器"})
     async def gmod(self, event: AstrMessageEvent):
-        """GMod 服务器查询。用法: /gmod <别名 或 IP> [端口]，/gmod list 查看列表，/gmod help 查看帮助"""
+        """GMod 服务器查询。用法: /gmod <别名 或 IP> [端口]，/gmod list [组名] 查看列表，/gmod help 查看帮助"""
+        if not self._group_allowed(event):
+            yield event.plain_result(
+                "❌ 当前群聊不在本插件的白名单内，无法使用 GMod 查询功能。"
+            )
+            return
+
         parts = event.message_str.strip().split()
         if len(parts) < 2:
             yield event.plain_result(self._help_text())
@@ -1530,6 +1681,11 @@ class GModServerQuery(Star):
             return
 
         if param in ("list", "servers", "列表", "服务器列表"):
+            # /gmod list <组名> → 仅输出该组内的服务器；无参数 → 全部
+            group_name = parts[2] if len(parts) > 2 else None
+            if group_name is not None:
+                yield event.plain_result(self._group_list_text(group_name))
+                return
             if self._render_enabled():
                 try:
                     url = await self._render_list_image()
@@ -1548,9 +1704,14 @@ class GModServerQuery(Star):
             yield await self._reply_detail(event, raw_param, srv["ip"], srv["port"])
             return
 
+        # 也支持直接 /gmod <组名> 查看组内服务器（别名优先，未命中才查组）
+        if raw_param in self.groups:
+            yield event.plain_result(self._group_list_text(raw_param))
+            return
+
         if not self._looks_like_address(raw_param):
             yield event.plain_result(
-                f"❌ 未找到别名 [{raw_param}]。\n"
+                f"❌ 未找到别名或组名 [{raw_param}]。\n"
                 f"可用 /gmod list 查看已保存别名，/gmod help 查看帮助。"
             )
             return
@@ -1567,6 +1728,9 @@ class GModServerQuery(Star):
     @gmod_admin.command("add")
     async def add(self, event: AstrMessageEvent, 别名: str, ip: str, port: int = None):
         """添加服务器: /gmod-admin add <别名> <IP> [端口]"""
+        if not self._group_allowed(event):
+            yield event.plain_result("❌ 当前群聊不在本插件的白名单内，无法使用管理指令。")
+            return
         if not event.is_admin():
             yield event.plain_result("❌ 仅管理员可用。")
             return
@@ -1574,6 +1738,12 @@ class GModServerQuery(Star):
             port = self._default_port()
         if 别名 in self.servers:
             yield event.plain_result(f"❌ 别名 [{别名}] 已存在，可用 /gmod-admin remove {别名} 删除后重新添加。")
+            return
+        if 别名 in self.groups:
+            yield event.plain_result(
+                f"❌ 名称 [{别名}] 与已有服务器组重名，无法添加为服务器别名。\n"
+                f"服务器别名与服务器组名必须唯一，请换一个别名后重试。"
+            )
             return
         self.servers[别名] = {"ip": ip, "port": port}
         self._save()
@@ -1586,23 +1756,191 @@ class GModServerQuery(Star):
     @gmod_admin.command("remove", alias={"del", "删除"})
     async def remove(self, event: AstrMessageEvent, 别名: str):
         """删除服务器: /gmod-admin remove <别名>"""
+        if not self._group_allowed(event):
+            yield event.plain_result("❌ 当前群聊不在本插件的白名单内，无法使用管理指令。")
+            return
         if not event.is_admin():
             yield event.plain_result("❌ 仅管理员可用。")
             return
         if 别名 in self.servers:
             del self.servers[别名]
+            # 同步从所有服务器组中移除该别名，避免留下失效引用
+            affected = []
+            for gname, members in self.groups.items():
+                if 别名 in members:
+                    members.remove(别名)
+                    affected.append(gname)
             self._save()
-            yield event.plain_result(f"✅ 已删除别名: {别名}")
+            msg = f"✅ 已删除别名: {别名}"
+            if affected:
+                msg += f"\n（已同步从服务器组移除: {'、'.join(affected)}）"
+            yield event.plain_result(msg)
         else:
             yield event.plain_result(f"❌ 未找到别名: {别名}，可用 /gmod-admin list 查看所有已保存的服务器。")
 
     @gmod_admin.command("list", alias={"列表"})
     async def admin_list(self, event: AstrMessageEvent):
         """列出已保存的服务器（管理组内）"""
+        if not self._group_allowed(event):
+            yield event.plain_result("❌ 当前群聊不在本插件的白名单内，无法使用管理指令。")
+            return
         if not event.is_admin():
             yield event.plain_result("❌ 仅管理员可用。")
             return
         yield event.plain_result(self._list_text())
+
+    # ---------- 服务器组管理 ----------
+    @gmod_admin.command("setgroup")
+    async def setgroup(self, event: AstrMessageEvent, 组名: str):
+        """创建服务器组: /gmod-admin setgroup <组名>"""
+        if not self._group_allowed(event):
+            yield event.plain_result("❌ 当前群聊不在本插件的白名单内，无法使用管理指令。")
+            return
+        if not event.is_admin():
+            yield event.plain_result("❌ 仅管理员可用。")
+            return
+        if 组名 in self.groups:
+            yield event.plain_result(
+                f"❌ 服务器组 [{组名}] 已存在（{len(self.groups[组名])} 台）。\n"
+                f"可用 /gmod-admin addgroup {组名} <别名> 添加成员。"
+            )
+            return
+        if 组名 in self.servers:
+            yield event.plain_result(
+                f"❌ 名称 [{组名}] 与已有服务器别名重名，无法创建为服务器组。\n"
+                f"服务器别名与服务器组名必须唯一，请换一个组名后重试。"
+            )
+            return
+        self.groups[组名] = []
+        self._save()
+        logger.info(f"已创建服务器组: {组名}")
+        yield event.plain_result(
+            f"✅ 已创建服务器组: {组名}（空组）\n"
+            f"用 /gmod-admin addgroup {组名} <别名> 添加成员，\n"
+            f"添加完成后可用 /gmod list {组名} 查看该组。"
+        )
+
+    @gmod_admin.command("addgroup")
+    async def addgroup(self, event: AstrMessageEvent, 组名: str, 别名: str):
+        """向服务器组添加成员: /gmod-admin addgroup <组名> <别名>"""
+        if not self._group_allowed(event):
+            yield event.plain_result("❌ 当前群聊不在本插件的白名单内，无法使用管理指令。")
+            return
+        if not event.is_admin():
+            yield event.plain_result("❌ 仅管理员可用。")
+            return
+        if 组名 not in self.groups:
+            names = "、".join(self.groups.keys()) or "（无）"
+            yield event.plain_result(
+                f"❌ 未找到服务器组 [{组名}]。\n现有组: {names}\n"
+                f"可用 /gmod-admin setgroup {组名} 先创建。"
+            )
+            return
+        if 别名 not in self.servers:
+            yield event.plain_result(
+                f"❌ 未找到服务器别名 [{别名}]。\n可用 /gmod-admin list 查看所有已保存的服务器。"
+            )
+            return
+        members = self.groups[组名]
+        if 别名 in members:
+            yield event.plain_result(f"❌ 服务器组 [{组名}] 中已存在 [{别名}]。")
+            return
+        members.append(别名)
+        self._save()
+        logger.info(f"服务器组 {组名} 添加成员: {别名}")
+        yield event.plain_result(
+            f"✅ 已将 [{别名}] 加入服务器组 [{组名}]（当前 {len(members)} 台）。\n"
+            f"可用 /gmod list {组名} 查看。"
+        )
+
+    @gmod_admin.command("kickgroup")
+    async def kickgroup(self, event: AstrMessageEvent, 组名: str, 别名: str):
+        """从服务器组移除成员: /gmod-admin kickgroup <组名> <别名>"""
+        if not self._group_allowed(event):
+            yield event.plain_result("❌ 当前群聊不在本插件的白名单内，无法使用管理指令。")
+            return
+        if not event.is_admin():
+            yield event.plain_result("❌ 仅管理员可用。")
+            return
+        if 组名 not in self.groups:
+            names = "、".join(self.groups.keys()) or "（无）"
+            yield event.plain_result(f"❌ 未找到服务器组 [{组名}]。\n现有组: {names}")
+            return
+        members = self.groups[组名]
+        if 别名 not in members:
+            in_group = "、".join(members) or "（空）"
+            yield event.plain_result(
+                f"❌ 服务器组 [{组名}] 中不存在 [{别名}]。\n该组成员: {in_group}"
+            )
+            return
+        members.remove(别名)
+        self._save()
+        logger.info(f"服务器组 {组名} 移除成员: {别名}")
+        yield event.plain_result(
+            f"✅ 已将 [{别名}] 从服务器组 [{组名}] 移除（当前 {len(members)} 台）。"
+        )
+
+    @gmod_admin.command("delgroup")
+    async def delgroup(self, event: AstrMessageEvent, 组名: str):
+        """删除服务器组: /gmod-admin delgroup <组名>"""
+        if not self._group_allowed(event):
+            yield event.plain_result("❌ 当前群聊不在本插件的白名单内，无法使用管理指令。")
+            return
+        if not event.is_admin():
+            yield event.plain_result("❌ 仅管理员可用。")
+            return
+        if 组名 not in self.groups:
+            names = "、".join(self.groups.keys()) or "（无）"
+            yield event.plain_result(f"❌ 未找到服务器组 [{组名}]。\n现有组: {names}")
+            return
+        count = len(self.groups[组名])
+        del self.groups[组名]
+        self._save()
+        logger.info(f"已删除服务器组: {组名}")
+        yield event.plain_result(
+            f"✅ 已删除服务器组: {组名}（原有 {count} 台服务器，服务器本身未被删除）。"
+        )
+
+    # ==================== 语音彩蛋 /mio ====================
+    MIO_AUDIO_NAMES = ("mio.wav", "mio.mp3", "mio.ogg", "mio.silk", "mio.amr")
+
+    def _find_mio_audio(self):
+        """在插件目录与 assets 目录下寻找彩蛋音频，返回第一个命中的路径。"""
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        candidates = [os.path.join(base_dir, n) for n in self.MIO_AUDIO_NAMES]
+        candidates += [os.path.join(base_dir, "assets", n) for n in self.MIO_AUDIO_NAMES]
+        for p in candidates:
+            try:
+                if os.path.isfile(p) and os.path.getsize(p) > 0:
+                    return p
+            except Exception:
+                continue
+        return None
+
+    @filter.command("mio", alias={"MIO", "Mio"})
+    async def mio(self, event: AstrMessageEvent):
+        """语音小彩蛋：发送一段语音（群聊/私聊均可用）"""
+        if not self._group_allowed(event):
+            yield event.plain_result("❌ 当前群聊不在本插件的白名单内，无法使用该功能。")
+            return
+
+        path = self._find_mio_audio()
+        if not path:
+            yield event.plain_result(
+                "🎵 彩蛋音频还没装上。\n"
+                "请把音频文件命名为 mio.wav（或 mio.mp3 / mio.ogg），\n"
+                "放到插件目录的 assets 文件夹下即可。"
+            )
+            return
+
+        try:
+            # 官方文档：Comp.Record(file=..., url=...)，暂时只接受 wav 格式
+            record = Comp.Record(file=path, url=path)
+            yield event.chain_result([record])
+        except Exception as e:
+            logger.error(f"[gmod] /mio 语音发送失败: {e}")
+            # 发送失败时静默降级，避免刷屏报错
+            yield event.plain_result("🎵 …")
 
     # ==================== LLM 函数工具 ====================
     # 设计要点：
@@ -1620,6 +1958,8 @@ Args:
 Returns:
     每个服务器的别名与地址，以及当前是否在线。
 """
+        if not self._group_allowed(event):
+            return "当前群聊不在插件的白名单内，无法使用该功能。请直接告知用户此限制。"
         if not self.servers:
             return "当前没有保存任何服务器。请提示用户先用 /gmod-admin add <别名> <IP> [端口] 添加。"
 
@@ -1634,6 +1974,12 @@ Returns:
                 )
             else:
                 lines.append(f"{alias} | {addr} | 离线（{info.get('err', '未知')}）")
+        if self.groups:
+            grouped = "；".join(
+                f"{g}({len([a for a in m if a in self.servers])}台)"
+                for g, m in self.groups.items()
+            )
+            lines.append(f"服务器组：{grouped}")
         return "\n".join(lines)
 
     @filter.llm_tool(name="gmod_query_server")
@@ -1646,12 +1992,14 @@ Returns:
         """查询一台 GMod 服务器的实时状态，并把结果图直接发送给用户。当用户想知道某台服务器的在线人数、地图、延迟等信息时调用。不要在回答里重复这里返回的数据，系统已经把结果图发给用户了。
 
 Args:
-    target(string): 服务器别名，或 IP/域名地址
+    target(string): 服务器别名、服务器组名，或 IP/域名地址。若传组名，会查询该组内全部服务器
     port(number): 端口，仅在 target 是 IP/域名 且用户明确指定端口时填写；留 0 使用默认端口
 
 Returns:
     一行紧凑的服务器状态摘要，用于你判断是否值得补一句短评。
 """
+        if not self._group_allowed(event):
+            return "当前群聊不在插件的白名单内，无法使用该功能。请直接告知用户此限制。"
         target = (target or "").strip()
         if not target:
             return "查询失败：target 为空。"
@@ -1671,8 +2019,17 @@ Returns:
                 srv = self.servers[matched]
                 alias, ip, qport = matched, srv["ip"], srv["port"]
             else:
+                # 再按服务器组名匹配（别名优先）
+                gname = target if target in self.groups else None
+                if gname is None:
+                    glow = {k.lower(): k for k in self.groups}
+                    gname = glow.get(target.lower())
+                if gname is not None:
+                    return await self._llm_query_group(event, gname)
                 names = "、".join(self.servers.keys()) or "（无）"
-                return f"未找到别名 [{target}]，也不是有效地址。已保存的别名：{names}"
+                gtext = "、".join(self.groups.keys()) or "（无）"
+                return (f"未找到别名或组名 [{target}]，也不是有效地址。\n"
+                        f"已保存的别名：{names}\n服务器组：{gtext}")
 
         # 2) 查询
         info = await self._query_one(alias, ip, qport)
@@ -1699,6 +2056,38 @@ Returns:
             f" | bot: {info.get('bots', 0)}"
             + ("" if img_sent else " | 【注意】结果图发送失败，请把上面的数据用简短的文字告诉用户")
         )
+
+    async def _llm_query_group(self, event, group_name: str) -> str:
+        """LLM 工具：查询整个服务器组，把列表图发给用户，返回紧凑摘要。"""
+        members = [a for a in (self.groups.get(group_name) or []) if a in self.servers]
+        if not members:
+            return f"服务器组 [{group_name}] 内暂无可用服务器。"
+
+        tasks = [self._query_one(a, self.servers[a]["ip"], self.servers[a]["port"])
+                 for a in members]
+        results = await asyncio.gather(*tasks)
+
+        img_sent = False
+        if self._render_enabled():
+            try:
+                url = await self._render_list_image_from(results)
+                img_sent = await self._send_image(event.unified_msg_origin, url)
+            except Exception as e:
+                logger.error(f"[gmod] LLM 工具组渲染失败: {e}")
+
+        lines = [f"服务器组 [{group_name}]（{len(results)} 台）"]
+        for info in results:
+            alias = info.get("alias") or ""
+            if info.get("online"):
+                lines.append(
+                    f"{alias} | 在线 | {info.get('players', 0)}/{info.get('max_players', 0)}人"
+                    f" | {info.get('map') or '-'} | {info.get('ping', '-')}ms"
+                )
+            else:
+                lines.append(f"{alias} | 离线（{info.get('err', '未知')}）")
+        if not img_sent:
+            lines.append("【注意】结果图发送失败，请把上面的数据用简短的文字告诉用户")
+        return "\n".join(lines)
 
     async def _send_image(self, umo: str, url: str) -> bool:
         """主动把图片发到指定会话，返回是否发送成功。

@@ -39,6 +39,10 @@ Built from scratch by rewriting the old v3.3.2 — returning to **1.0** as a fre
   **Custom query API**: Plug in a third-party query endpoint as a fallback or preferred data source; common field names are auto-detected.
 - **LLM 函数工具**：接入 AstrBot 的 LLM 工具调用，模型可直接查询服务器并出图，再按人格自行补一句短评。
   **LLM function tools**: Integrates with AstrBot's LLM tool calling — the model can query a server, send the image, then add its own short remark.
+- **服务器组**：管理员可把服务器划分为多个组，成员用 **/gmod list &lt;组名&gt;** 只看该组；一个服务器可同时属于多个组。
+  **Server groups**: Admins can group servers; members use **/gmod list &lt;group&gt;** to view only that group. One server may belong to multiple groups.
+- **群聊白名单**：可限定仅在指定群聊使用全部功能（私聊不受限制），留空则所有群可用。
+  **Group whitelist**: Restrict all features to specified group chats (private chat is always allowed); leave empty to allow every group.
 - **可视化配置**：通过 AstrBot 管理面板可视化配置全部选项。
   **Visual config**: All options are configurable from the AstrBot admin panel.
 
@@ -90,9 +94,11 @@ git clone https://github.com/yosuki-kata/astrbot-plugin-gmod-server-query.git
 **/gmod &lt;IP&gt; [port]**　　　直接查询某服务器 &middot; Query a server directly
 **/gmod &lt;alias&gt;**　　　　　查询已保存的服务器（别名区分大小写）&middot; Query a saved server (alias is case-sensitive)
 **/gmod list**　　　　　　　　查看服务器列表（生成渲染图）&middot; Show server list (rendered image)
+**/gmod list &lt;group&gt;**　　　只查看某个服务器组 &middot; Show only one server group
 **/gmod help**　　　　　　　　查看帮助 &middot; Show help
 
 群内发送 **&lt;alias&gt;**　　　　直接发别名，自动查询（消息监听，可配置）&middot; Send an alias in group → auto query
+群内发送 **&lt;group&gt;**　　　　直接发组名，查看该组服务器列表（消息监听）&middot; Send a group name in group → show that group
 群内发送 **[服务器列表]**　　　自动生成列表渲染图 &middot; Auto-generate list render image
 
 ### 管理指令（管理员） / Admin commands (administrator)
@@ -105,14 +111,41 @@ git clone https://github.com/yosuki-kata/astrbot-plugin-gmod-server-query.git
 **/gmod-admin remove &lt;alias&gt;**　　　　　　　删除服务器 &middot; Remove a server
 **/gmod-admin list**　　　　　　　　　　　　　列出现存服务器 &middot; List saved servers
 
+### 服务器组（管理员） / Server groups (administrator)
+
+> 服务器组用于把若干服务器归为一类，成员可用 **/gmod list &lt;组名&gt;** 只看该组的服务器。一个服务器可以同时属于多个组。
+>
+> **服务器别名与服务器组名必须唯一**：创建时若与另一类重名，插件会提示并拒绝该操作。
+>
+> Server groups classify your servers. Members can use **/gmod list &lt;group&gt;** to view only that group. One server may belong to multiple groups.
+>
+> **Alias and group names must be unique**: creating one that collides with the other kind is rejected with a clear message.
+
+**/gmod-admin setgroup &lt;group&gt;**　　　　　　　　创建空组 &middot; Create an empty group
+**/gmod-admin addgroup &lt;group&gt; &lt;alias&gt;**　　　把服务器加入组 &middot; Add a server to a group
+**/gmod-admin kickgroup &lt;group&gt; &lt;alias&gt;**　　 从组中移出服务器 &middot; Remove a server from a group
+**/gmod-admin delgroup &lt;group&gt;**　　　　　　　　删除整个组（服务器本身不删除）&middot; Delete the group (servers are kept)
+
+**示例 / Examples**：
+
+**/gmod-admin setgroup 休闲服**　　　　　　　　　# 创建空组「休闲服」/ Create an empty group
+**/gmod-admin addgroup 休闲服 服1**　　　　　　　# 把「服1」加入该组 / Add server to the group
+**/gmod-admin addgroup 休闲服 服2**
+**/gmod-admin kickgroup 休闲服 服2**　　　　　　　# 把「服2」移出该组 / Remove from the group
+**/gmod-admin delgroup 休闲服**　　　　　　　　　# 删除整个组 / Delete the group
+
 指令组与 **/gmod** 的对应关系 / Mapping between the command groups：
 
 | 你想做的事 / What you want | 普通查询指令 / Normal command | 管理指令 / Admin command |
 |-----------|------------|---------|
 | 查询服务器 / Query server | **/gmod &lt;alias-or-IP&gt;** | — |
 | 查看列表 / View list | **/gmod list** | **/gmod-admin list** |
+| 查看某个组 / View a group | **/gmod list &lt;group&gt;** | — |
 | 添加服务器 / Add server | — | **/gmod-admin add &lt;alias&gt; &lt;IP&gt; [port]** |
 | 删除服务器 / Remove server | — | **/gmod-admin remove &lt;alias&gt;** |
+| 创建服务器组 / Create group | — | **/gmod-admin setgroup &lt;group&gt;** |
+| 组内增删成员 / Group members | — | **/gmod-admin addgroup** / **kickgroup** |
+| 删除服务器组 / Delete group | — | **/gmod-admin delgroup &lt;group&gt;** |
 
 **示例 / Examples**：
 
@@ -128,6 +161,7 @@ git clone https://github.com/yosuki-kata/astrbot-plugin-gmod-server-query.git
 |----------|--------|------|
 | **default_port** | 27015 | 默认查询端口 / Default query port |
 | **query_timeout** | 5 | 查询超时时间（秒）/ Query timeout in seconds |
+| **whitelist_groups** | "" | 群聊白名单，留空表示所有群可用；填写后仅这些群可用全部功能（私聊不受限制）。多个群号用逗号或换行分隔 / Group whitelist; empty means all groups allowed. When set, only these groups can use all features (private chat is always allowed). Separate IDs with commas or newlines |
 | **query_custom_api** | "" | 自定义查询 API 地址，留空不启用。请求形式为 **GET {地址}?ip={IP}&port={端口}** / Custom query API endpoint; disabled when empty. Requested as **GET {url}?ip={IP}&port={port}** |
 | **query_custom_api_key** | "" | 自定义查询 API 密钥，填写后以请求头 **X-API-Key** 发送 / API key sent as the **X-API-Key** header when set |
 | **query_custom_api_first** | false | 是否优先使用自定义查询 API（需先填地址）/ Prefer the custom query API (requires an endpoint) |
@@ -273,6 +307,8 @@ This plugin offers two optional external endpoints: a **custom T2I service** and
 | **_conf_schema.json** | 可视化配置项定义 / Visual config definitions |
 | **requirements.txt** | 运行依赖（python-a2s）/ Runtime dependencies (python-a2s) |
 | **assets/** | 内置默认背景图，可放入多张（bg.jpg / 1.png 等）随机轮换 / Bundled default backgrounds; drop in several images to rotate |
+| **CHANGELOG.md** | 完整版本变更记录（按版本降序）/ Full version history, newest first |
+| **logo.png** | 插件市场图标（256×256，1:1）/ Plugin market icon (256x256, 1:1) |
 
 ---
 
@@ -292,7 +328,7 @@ Issues and Pull Requests are welcome. This plugin depends on [python-a2s](https:
 
 ## 📝 更新记录 / Changelog
 
-**版本更新详情，请到 GitHub 仓库查看 / For detailed change history, please visit the GitHub repository.**
+**完整版本变更记录见 [CHANGELOG.md](CHANGELOG.md)（按版本降序）。** / **See [CHANGELOG.md](CHANGELOG.md) for the full version history (descending order).**
 
 > 本插件设计为可长期免维护、长时间不动。若想了解每次发布的具体改动，请前往：
 >

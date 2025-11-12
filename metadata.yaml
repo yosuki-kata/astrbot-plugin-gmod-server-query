@@ -2,7 +2,7 @@ name: gmod_a2s_server_query
 display_name: gmod服务器查询插件：重制
 short_desc: GMod 服务器查询与状态图渲染
 desc: GMod 服务器在线查询工具，支持别名管理、消息监听自动查询、服务器列表图片渲染、自定义查询 API 与 LLM 工具调用。
-version: 1.2.0
+version: 1.2.1
 author: yosuki-kata
 repo: https://github.com/yosuki-kata/astrbot-plugin-gmod-server-query
 astrbot_version: ">=4.17.0"
