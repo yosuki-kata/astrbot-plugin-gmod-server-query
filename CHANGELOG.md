@@ -5,7 +5,7 @@ All notable changes to this plugin are documented here, **newest first**.
 
 ---
 
-## [1.2.1] - 未发布 / Unreleased
+## [1.2.1] - 2026-11-12
 
 ### 新增功能 / Added
 
