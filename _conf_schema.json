@@ -1,0 +1,43 @@
+{
+  "default_port": {
+    "description": "默认查询端口，当未指定端口时使用",
+    "type": "int",
+    "default": 27015
+  },
+  "query_timeout": {
+    "description": "服务器查询超时时间（秒）",
+    "type": "int",
+    "default": 5
+  },
+  "enable_listen": {
+    "description": "是否启用消息监听：在群内直接发送已保存的服务器别名时，自动返回该服务器信息",
+    "type": "bool",
+    "default": true
+  },
+  "listen_only_group": {
+    "description": "是否仅在群聊中监听别名消息（关闭则私聊也会响应）",
+    "type": "bool",
+    "default": true
+  },
+  "listen_exact_match": {
+    "description": "是否仅精确匹配别名（开启：消息必须与别名完全一致才响应；关闭：消息中包含别名也响应）",
+    "type": "bool",
+    "default": true
+  },
+  "render_image": {
+    "description": "是否用图片渲染服务器列表（/gmod list 与关键词触发的列表将生成渲染图）",
+    "type": "bool",
+    "default": true
+  },
+  "render_keywords": {
+    "description": "触发服务器列表渲染图的监听关键词（群内直接发送这些词即生成列表图片）",
+    "type": "list",
+    "default": ["服务器列表", "列表"]
+  },
+  "render_quality": {
+    "description": "列表渲染图 JPEG 画质（1~100），默认 92。画质越高文件越大",
+    "type": "int",
+    "default": 92,
+    "hint": "建议 80 ~ 95"
+  }
+}
