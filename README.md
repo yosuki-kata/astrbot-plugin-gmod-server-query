@@ -3,9 +3,9 @@
 ![AstrBot](https://img.shields.io/badge/AstrBot-Plugin-blue)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> **一个面向 AstrBot 的 Garry's Mod (GMod) 服务器在线查询插件（重制版 v1.0.0）。**
->
-> **An online server query plugin for Garry's Mod (GMod) running on AstrBot (remastered v1.0.0).**
+> **一个面向 AstrBot 的 Garry's Mod (GMod) 服务器在线查询插件（重制版 v1.0.1）。**
+> >
+> **An online server query plugin for Garry's Mod (GMod) running on AstrBot (remastered v1.0.1).**
 
 基于原 v3.3.2 功能彻底重写，回归 **1.0** 作为全新起点——代码结构更清晰、命名更规范，并已规避历次版本踩过的所有坑。
 
@@ -44,14 +44,14 @@ Once published, install directly from the AstrBot admin panel: **Plugin Market �
 
 ### 方式二：手动 zip 安装 / Method 2: Manual zip install
 
-> **压缩包命名规范 / Zip naming rule**：成品压缩包须命名为 **V主版本号.次版本号.修订版本号.zip**（如 **V1.0.0.zip**），并与 **metadata.yaml** 中的 **version** 字段严格一致。其他命名（如 **插件_v1.0.zip**）不推荐。
+> **压缩包命名规范 / Zip naming rule**：成品压缩包须命名为 **V主版本号.次版本号.修订版本号.zip**（如 **V1.0.1.zip**），并与 **metadata.yaml** 中的 **version** 字段严格一致。其他命名（如 **插件_v1.0.zip**）不推荐。
 >
-> The final package must be named **V&lt;major&gt;.&lt;minor&gt;.&lt;patch&gt;.zip** (e.g. **V1.0.0.zip**), strictly matching the **version** field in **metadata.yaml**. Other names (like **插件_v1.0.zip**) are NOT recommended.
+> The final package must be named **V&lt;major&gt;.&lt;minor&gt;.&lt;patch&gt;.zip** (e.g. **V1.0.1.zip**), strictly matching the **version** field in **metadata.yaml**. Other names (like **插件_v1.0.zip**) are NOT recommended.
 
 步骤 / Steps：
 
-1. 打包为 **V1.0.0.zip**，将 **main.py**、**metadata.yaml**、**_conf_schema.json**、**requirements.txt** 放在 zip 根目录（不要放进子文件夹）。
-   Create the zip: **V1.0.0.zip**, with **main.py**, **metadata.yaml**, **_conf_schema.json**, **requirements.txt** at the zip root (not inside a sub-folder).
+1. 打包为 **V1.0.1.zip**，将 **main.py**、**metadata.yaml**、**_conf_schema.json**、**requirements.txt** 放在 zip 根目录（不要放进子文件夹）。
+   Create the zip: **V1.0.1.zip**, with **main.py**, **metadata.yaml**, **_conf_schema.json**, **requirements.txt** at the zip root (not inside a sub-folder).
 2. 在 AstrBot 管理面板「**插件管理 → 安装**」上传 zip。
    In the AstrBot admin panel: **Plugin Management → Install → upload the zip**.
 3. 安装完成后，重启插件即可生效。
