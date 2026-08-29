@@ -17,10 +17,9 @@ import asyncio
 import ipaddress
 import json
 import os
-
 import a2s
 from astrbot.api.all import *
-from astrbot.core.platform.message_event_result import MessageEventResult  # noqa
+
 
 # ==================== 配置常量 ====================
 class Config:
