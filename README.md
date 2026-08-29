@@ -3,9 +3,9 @@
 ![AstrBot](https://img.shields.io/badge/AstrBot-Plugin-blue)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> **一个面向 AstrBot 的 Garry's Mod (GMod) 服务器在线查询插件（重制版 v1.0.1）。**
+> **一个面向 AstrBot 的 Garry's Mod (GMod) 服务器在线查询插件（重制版）。**
 > >
-> **An online server query plugin for Garry's Mod (GMod) running on AstrBot (remastered v1.0.1).**
+> **An online server query plugin for Garry's Mod (GMod) running on AstrBot (remastered).**
 
 基于原 v3.3.2 功能彻底重写，回归 **1.0** 作为全新起点——代码结构更清晰、命名更规范，并已规避历次版本踩过的所有坑。
 
