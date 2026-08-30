@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""GMod 服务器查询插件（重制版 v1.0.1）
+"""GMod 服务器查询插件（重制版 v1.0.2）
 
 基于原 v3.3.2 的全部功能彻底重写，采用更清晰的结构与命名。
 功能涵盖：别名管理、IP/别名查询、超时控制、消息监听、服务器列表渲染图、可视化配置。
@@ -19,6 +19,7 @@ import json
 import os
 import a2s
 from astrbot.api.all import *
+from astrbot.api.event import filter  # 显式导入 filter，避免与 Python 内置 filter 冲突
 
 
 # ==================== 配置常量 ====================
@@ -153,7 +154,6 @@ body {
 """
 
 
-@register("gmod_a2s_server_query", "GMod 服务器查询插件", "基于 a2s 协议查询 GMod/Garry's Mod 游戏服务器信息")
 class GModServerQuery(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)

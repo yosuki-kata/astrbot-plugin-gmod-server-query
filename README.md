@@ -44,14 +44,13 @@ Once published, install directly from the AstrBot admin panel: **Plugin Market �
 
 ### 方式二：手动 zip 安装 / Method 2: Manual zip install
 
-> **压缩包命名规范 / Zip naming rule**：成品压缩包须命名为 **V主版本号.次版本号.修订版本号.zip**（如 **V1.0.1.zip**），并与 **metadata.yaml** 中的 **version** 字段严格一致。其他命名（如 **插件_v1.0.zip**）不推荐。
+> **压缩包命名规范 / Zip naming rule**：成品压缩包须命名为 **V主版本号.次版本号.修订版本号.zip**（如 **V1.0.2.zip**），并与 **metadata.yaml** 中的 **version** 字段严格一致。其他命名（如 **插件_v1.0.zip**）不推荐。
 >
-> The final package must be named **V&lt;major&gt;.&lt;minor&gt;.&lt;patch&gt;.zip** (e.g. **V1.0.1.zip**), strictly matching the **version** field in **metadata.yaml**. Other names (like **插件_v1.0.zip**) are NOT recommended.
+> The final package must be named **V&lt;major&gt;.&lt;minor&gt;.&lt;patch&gt;.zip** (e.g. **V1.0.2.zip**), strictly matching the **version** field in **metadata.yaml**. Other names (like **插件_v1.0.zip**) are NOT recommended.
+>
 
-步骤 / Steps：
-
-1. 打包为 **V1.0.1.zip**，将 **main.py**、**metadata.yaml**、**_conf_schema.json**、**requirements.txt** 放在 zip 根目录（不要放进子文件夹）。
-   Create the zip: **V1.0.1.zip**, with **main.py**, **metadata.yaml**, **_conf_schema.json**, **requirements.txt** at the zip root (not inside a sub-folder).
+1. 打包为 **V1.0.2.zip**，将 **main.py**、**metadata.yaml**、**_conf_schema.json**、**requirements.txt** 放在 zip 根目录（不要放进子文件夹）。
+   Create the zip: **V1.0.2.zip**, with **main.py**, **metadata.yaml**, **_conf_schema.json**, **requirements.txt** at the zip root (not inside a sub-folder).
 2. 在 AstrBot 管理面板「**插件管理 → 安装**」上传 zip。
    In the AstrBot admin panel: **Plugin Management → Install → upload the zip**.
 3. 安装完成后，重启插件即可生效。
