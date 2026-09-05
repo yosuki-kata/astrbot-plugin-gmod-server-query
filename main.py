@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""GMod 服务器查询插件（重制版 v1.0.2）
+"""GMod 服务器查询插件（重制版 v1.0.3）
 
 基于原 v3.3.2 的全部功能彻底重写，采用更清晰的结构与命名。
 功能涵盖：别名管理、IP/别名查询、超时控制、消息监听、服务器列表渲染图、可视化配置。
@@ -500,6 +500,9 @@ class GModServerQuery(Star):
     @gmod_admin.command("add")
     async def add(self, event: AstrMessageEvent, 别名: str, ip: str, port: int = None):
         """添加服务器: /gmod-admin add <别名> <IP> [端口]"""
+        if not event.is_admin():
+            yield event.plain_result("❌ 仅管理员可用。")
+            return
         if port is None:
             port = self._default_port()
         if 别名 in self.servers:
@@ -516,6 +519,9 @@ class GModServerQuery(Star):
     @gmod_admin.command("remove", alias={"del", "删除"})
     async def remove(self, event: AstrMessageEvent, 别名: str):
         """删除服务器: /gmod-admin remove <别名>"""
+        if not event.is_admin():
+            yield event.plain_result("❌ 仅管理员可用。")
+            return
         if 别名 in self.servers:
             del self.servers[别名]
             self._save()
@@ -526,6 +532,9 @@ class GModServerQuery(Star):
     @gmod_admin.command("list", alias={"列表"})
     async def admin_list(self, event: AstrMessageEvent):
         """列出已保存的服务器（管理组内）"""
+        if not event.is_admin():
+            yield event.plain_result("❌ 仅管理员可用。")
+            return
         yield event.plain_result(self._list_text())
 
     # ==================== 生命周期 ====================

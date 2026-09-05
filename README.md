@@ -59,6 +59,20 @@ Once published, install directly from the AstrBot admin panel: **Plugin Market �
 > **metadata.yaml** 必须使用官方字段（**name**、**display_name**、**version**、**author**、**repo**、**astrbot_version**、**tags** 等）。
 > **metadata.yaml** must use the official fields (**name**, **display_name**, **version**, **author**, **repo**, **astrbot_version**, **tags**, ...).
 
+### 方式三：git 仓库克隆安装（获取最新更新）/ Method 3: Clone from git repo (for the latest updates)
+
+进入 AstrBot 插件目录，直接克隆本仓库即可随时拉取最新版本：
+
+Change into AstrBot's plugin directory and clone this repo to always stay at the latest version:
+
+```bash
+cd astrbot/data/plugin
+git clone https://github.com/yosuki-kata/astrbot-plugin-gmod-server-query.git
+```
+
+> 说明：**git clone 拉取到的即为仓库最新源码**，无需手动下载 zip。
+> Note: **git clone fetches the latest source** directly from the repo — no manual zip download needed.
+
 ---
 
 ## 📖 使用说明 / Usage

@@ -1,29 +1,7 @@
 name: gmod_a2s_server_query
 display_name: gmod服务器查询插件：重制
-short_desc: GMod 服务器在线查询工具，支持别名管理、消息监听自动查询、服务器列表图片渲染。
-desc: |-
-  GMod 服务器查询插件（重制版 v1.0.2，全新起点）。
-
-  【功能特性】
-  1. 别名管理：用 /gmod-admin 指令组把 IP/端口保存为易记别名
-  2. IP/别名查询：/gmod <别名或IP> 快速查询服务器在线信息（在线人数、地图、延迟等）
-  3. 超时控制：所有网络查询套用可配置超时（默认 5 秒），避免卡住
-  4. 消息监听：群内直接发送已保存别名即自动查询（可开关、可限定仅群聊、可精确/包含匹配）
-  5. 列表渲染图：发送「服务器列表」或在 /gmod list 时生成高画质 JPEG 列表图片（画质可配置，规避云端 422）
-  6. 可视化配置：通过 AstrBot 管理面板配置全部 8 项选项
-
-  【快速使用】
-  /gmod <IP> [端口]      直接查询服务器
-  /gmod <别名>           查询已保存服务器
-  /gmod list             查看服务器列表（渲染图）
-  /gmod-admin list       管理别名列表
-
-  【v1.0.2 更新说明】
-  修复：显式导入 from astrbot.api.event import filter，解决 filter 被 Python 内置 filter 类型遮蔽，导致加载时报 "type object 'filter' has no attribute 'event_message_type'" 的安装失败问题（事件监听注册器必须显式导入才不与内置高阶函数 filter 冲突）。同时移除已废弃的 @register 装饰器，改为由框架自动注册 Star 类，解决 register_star() 缺少 version 参数导致的安装失败（适配新版 AstrBot 自动注册机制）。
-
-  【v1.0.1 更新说明】
-  修复：移除不再使用的 MessageEventResult 导入，解决从插件市场安装时加载失败并被回滚的兼容性问题。
-version: 1.0.2
+desc: GMod 服务器在线查询工具，支持别名管理、消息监听自动查询、服务器列表图片渲染。
+version: 1.0.3
 author: yosuki-kata
 repo: https://github.com/yosuki-kata/astrbot-plugin-gmod-server-query
 astrbot_version: ">=4.17.0"
