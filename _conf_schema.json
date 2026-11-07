@@ -29,6 +29,11 @@
     "type": "bool",
     "default": true
   },
+  "render_detail": {
+    "description": "是否用图片渲染单服务器详情（查询单个服务器时生成详情图；关闭则返回文字。需同时开启 render_image）",
+    "type": "bool",
+    "default": true
+  },
   "render_keywords": {
     "description": "触发服务器列表渲染图的监听关键词（群内直接发送这些词即生成列表图片）",
     "type": "list",
@@ -39,5 +44,30 @@
     "type": "int",
     "default": 92,
     "hint": "建议 80 ~ 95"
+  },
+  "render_background": {
+    "description": "渲染图背景图片（上传本地图片，留空则使用插件 assets 目录下的 bg 图片或默认渐变）",
+    "type": "file",
+    "default": [],
+    "file_types": ["jpg", "jpeg", "png", "webp"],
+    "hint": "上传后会自动转为 base64 内联，不依赖外链。建议使用 16:9 或竖版大图"
+  },
+  "render_local_t2i": {
+    "description": "本地 T2I 服务地址（自建的 AstrBot T2I 服务，填如 http://127.0.0.1:8000，留空则不使用本地兜底）",
+    "type": "string",
+    "default": "",
+    "hint": "外部 T2I 全部失败时会自动尝试此地址。也可填能用的第三方 text2img 端点"
+  },
+  "prefer_local_t2i": {
+    "description": "优先使用本地 T2I 渲染（开启后先试本地地址，失败再试外部；关闭则外部优先、本地兜底）",
+    "type": "bool",
+    "default": false,
+    "hint": "需先在上一项填写本地 T2I 地址才生效"
+  },
+  "render_width": {
+    "description": "渲染图宽度（像素），用于控制出图分辨率",
+    "type": "int",
+    "default": 1080,
+    "hint": "1080 为标准 1080p 宽度；想更高清可填 1440 或 1920"
   }
 }

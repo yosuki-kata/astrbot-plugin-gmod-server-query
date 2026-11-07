@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""GMod 服务器查询插件（重制版 v1.0.3）
+"""GMod 服务器查询插件（重制版 v1.0.4）
 
 基于原 v3.3.2 的全部功能彻底重写，采用更清晰的结构与命名。
 功能涵盖：别名管理、IP/别名查询、超时控制、消息监听、服务器列表渲染图、可视化配置。
@@ -33,125 +33,257 @@ class Config:
     RENDER_IMAGE = True         # render_image
     RENDER_KEYWORDS = ["服务器列表", "列表"]  # render_keywords
     RENDER_QUALITY = 92         # render_quality
+    RENDER_WIDTH = 1080         # render_width（1080p）
+    LOCAL_T2I = ""              # render_local_t2i
+    PREFER_LOCAL_T2I = False    # prefer_local_t2i
 
 
-# ==================== 列表渲染图 HTML 模板（Jinja2） ====================
-LIST_TMPL = """<!DOCTYPE html>
+# ==================== 渲染图 HTML 模板（Jinja2） ====================
+# 说明：背景图使用本地图片（插件目录 assets/bg.jpg），由 _bg_style() 转 base64 内联，
+#      不存在时回退到 CSS 渐变，避免依赖外链、也避免云端 T2I 拉取外链超时。
+
+# ---------- 公共样式片段 ----------
+_COMMON_CSS = """
+ * { margin: 0; padding: 0; box-sizing: border-box; }
+ /* 背景层：绝对定位铺满整张长图（不是视口）。
+    旧方案用 fixed 附着，在 full_page 长截图里会以视口为基准，
+    背景只覆盖首屏高度、长图中段露出空白 —— 这是本次修复的核心。 */
+ html {
+     position: relative;
+     min-height: 100%;
+     width: 100%;
+     background-color: #cfe3f5;
+ }
+ body {
+     position: relative;
+     font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+     color: #1f2937;
+     padding: 20px;
+     min-height: 100vh;
+     width: 100%;
+     background-color: transparent;
+     background-image: none;
+ }
+ /* 真正的背景图：覆盖整张长图的物理尺寸，cover 填充并居中裁切 */
+ #bgfill {
+     position: absolute;
+     top: 0;
+     left: 0;
+     width: 100%;
+     height: 100%;
+     min-height: 100vh;
+     background-size: cover;
+     background-position: center center;
+     background-repeat: no-repeat;
+     background-color: #cfe3f5;
+     z-index: 0;
+     pointer-events: none;
+ }
+ .wrap { position: relative; z-index: 1; max-width: 940px; margin: 0 auto; }
+.card {
+    background: rgba(255,255,255,0.88);
+    border-radius: 14px;
+    padding: 16px 20px;
+    margin-bottom: 14px;
+    box-shadow: 0 4px 18px rgba(30,60,110,0.10);
+    overflow: hidden;
+}
+.card-title { font-size: 17px; font-weight: 700; color: #1e40af; margin-bottom: 12px; }
+.card-title .sub { float: right; font-size: 12px; font-weight: 400; color: #6b7280; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 26px; }
+.row { display: flex; font-size: 14px; line-height: 1.85; min-width: 0; }
+.row .k { color: #4b5563; white-space: nowrap; flex: none; }
+.row .k::after { content: ":"; margin-right: 2px; }
+.row .v { margin-left: 6px; font-weight: 600; word-break: break-all; min-width: 0; }
+.v-blue   { color: #2563eb; }
+.v-green  { color: #16a34a; }
+.v-purple { color: #9333ea; }
+.v-orange { color: #ea580c; }
+.v-red    { color: #dc2626; }
+.v-gray   { color: #6b7280; }
+.v-cyan   { color: #0891b2; }
+.v-pink   { color: #db2777; }
+.srv-head {
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 15px; font-weight: 700; color: #1d4ed8;
+    padding-bottom: 8px; margin-bottom: 10px;
+    border-bottom: 1px solid rgba(30,64,175,0.15);
+}
+.srv-head .badge {
+    flex: none; font-size: 12px; font-weight: 600;
+    background: #dbeafe; color: #1d4ed8; border-radius: 10px; padding: 1px 10px;
+}
+.srv-head .badge.full { background: #fee2e2; color: #b91c1c; }
+.srv-head .badge.off  { background: #e5e7eb; color: #4b5563; }
+/* 玩家网格 */
+.pgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px 12px; }
+.pitem {
+    background: rgba(255,255,255,0.75);
+    border: 1px solid rgba(30,64,175,0.10);
+    border-radius: 8px;
+    padding: 7px 10px;
+    font-size: 13px;
+    display: flex; align-items: baseline; justify-content: space-between;
+    overflow: hidden;
+}
+.pitem .n { color: #111827; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.pitem .t { color: #6b7280; font-size: 12px; margin-left: 8px; flex: none; }
+.pitem .idx { color: #9ca3af; font-size: 12px; margin-right: 6px; flex: none; }
+.empty { text-align: center; color: #6b7280; font-size: 14px; padding: 26px 0; }
+.footer {
+    display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+    color: #4b5563; font-size: 12px;
+    background: rgba(255,255,255,0.72);
+    border-radius: 10px; padding: 10px 16px;
+    margin-bottom: 4px;
+}
+.footer .hint { text-align: left; line-height: 1.6; }
+.footer .meta { text-align: right; white-space: nowrap; flex: none; line-height: 1.6; }
+"""
+# ---------- 单服务器详情模板 ----------
+DETAIL_TMPL = """<!DOCTYPE html>
 <html lang="zh">
 <head>
 <meta charset="UTF-8">
-<style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body {
-    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
-    background: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%);
-    color: #e6e9f5;
-    padding: 28px;
-    min-height: 100vh;
-}
-.container { max-width: 920px; margin: 0 auto; }
-.header {
-    display: flex; align-items: center; justify-content: space-between;
-    margin-bottom: 22px;
-}
-.header h1 { font-size: 26px; }
-.badge {
-    background: rgba(255,255,255,0.12); color: #b9c2ff;
-    padding: 5px 14px; border-radius: 20px; font-size: 14px;
-}
-.card {
-    background: rgba(255,255,255,0.06);
-    border: 1px solid rgba(255,255,255,0.09);
-    border-radius: 14px;
-    padding: 18px 20px;
-    margin-bottom: 16px;
-    backdrop-filter: blur(4px);
-}
-.card .top { display: flex; align-items: center; justify-content: space-between; }
-.card .name { font-size: 18px; font-weight: 600; }
-.card .alias { margin-top: 6px; color: #a8b0cc; font-size: 13px; }
-.card .alias .addr { color: #7e87a8; }
-.card .status { font-size: 20px; font-weight: 700; color: #4ade80; }
-.card .status.offline { color: #f87171; }
-.card .status .err { font-size: 16px; }
-.card .meta { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 8px; }
-.card .tag {
-    background: rgba(255,255,255,0.10); color: #cfd3ff;
-    border-radius: 6px; padding: 3px 10px; font-size: 12px;
-}
-.card .tag.blue   { background: rgba(102,126,234,0.25); color: #d5ccff; }
-.card .tag.green  { background: rgba(74,222,128,0.18); color: #86efac; }
-.card .tag.gray   { background: rgba(255,255,255,0.12); color: #ccc; }
-.card .players-list {
-    margin-top: 10px; padding-top: 10px;
-    border-top: 1px dashed rgba(255,255,255,0.15);
-    color: #cfd3ff; font-size: 13px; line-height: 1.5;
-}
-.card .players-list .label { color: #8b93a7; }
-.card .meta .err { color: #f87171; }
-.empty { color: #8b93a7; font-size: 15px; text-align: center; padding: 40px 0; }
-.footer {
-    text-align: right; color: #888; font-size: 12px;
-    margin-top: 14px; padding-top: 12px;
-    border-top: 1px solid rgba(255,255,255,0.10);
-}
+<style>""" + _COMMON_CSS + """
 </style>
 </head>
 <body>
-<div class="container">
-    <div class="header">
-        <h1>🎮 GMod 服务器列表</h1>
-        <span class="badge">共 {{ servers|length }} 台</span>
+<div id="bgfill" style="{{ bg_style }}"></div>
+<div class="wrap">
+
+
+    <!-- 服务器信息卡 -->
+    <div class="card">
+        <div class="srv-head">
+            [{{ s.alias }}]服务器实时状态
+            <span class="badge {{ 'full' if s.players >= s.max_players and s.max_players else '' }}">
+                在线 {{ s.players }}/{{ s.max_players }}
+            </span>
+        </div>
+        {% if s.online %}
+        <div class="grid2">
+            <div class="row"><span class="k">服务器名称</span><span class="v v-blue">{{ s.name or '-' }}</span></div>
+            <div class="row"><span class="k">密码</span><span class="v {{ 'v-red' if s.password else 'v-gray' }}">{{ '是' if s.password else '否' }}</span></div>
+            <div class="row"><span class="k">地址</span><span class="v v-blue">{{ s.ip }}:{{ s.port }}</span></div>
+            <div class="row"><span class="k">bot数量</span><span class="v v-gray">{{ s.bots }}</span></div>
+            <div class="row"><span class="k">游戏</span><span class="v v-green">{{ s.game or '-' }}</span></div>
+            <div class="row"><span class="k">VAC</span><span class="v {{ 'v-green' if s.vac else 'v-gray' }}">{{ '安全' if s.vac else '未启用' }}</span></div>
+            <div class="row"><span class="k">地图</span><span class="v v-pink">{{ s.map or '-' }}</span></div>
+            <div class="row"><span class="k">在线玩家</span><span class="v {{ 'v-red' if s.players >= s.max_players and s.max_players else 'v-orange' }}">{{ s.players }}/{{ s.max_players }}</span></div>
+            <div class="row"><span class="k">归类</span><span class="v v-purple">{{ s.folder or '-' }}</span></div>
+            <div class="row"><span class="k">版本</span><span class="v v-purple">{{ s.version or '-' }}</span></div>
+            <div class="row"><span class="k">AppID</span><span class="v v-gray">{{ s.app_id or '-' }}</span></div>
+            <div class="row"><span class="k">延迟</span><span class="v {{ s.ping_cls }}">{{ s.ping }} ms</span></div>
+            <div class="row"><span class="k">系统</span><span class="v v-gray">{{ s.platform_name }}</span></div>
+            <div class="row"><span class="k">服务器类型</span><span class="v v-gray">{{ s.type_name }}</span></div>
+        </div>
+        {% else %}
+        <div class="empty">❌ 服务器离线（{{ s.err }}）</div>
+        {% endif %}
     </div>
 
-    {% if servers %}
-        {% for s in servers %}
-        <div class="card">
-            <div class="top">
-                <div class="name">{{ s.name or s.alias }}</div>
-                <div class="status {{ 'offline' if not s.online else '' }}">
-                    {% if s.online %}
-                        {{ s.players }}<span style="color:#888;font-size:14px;font-weight:400"> / {{ s.max_players }}</span>
-                    {% else %}
-                        <span class="err">离线</span>
-                    {% endif %}
-                </div>
-            </div>
-            <div class="alias">🏷️ {{ s.alias }} 　<span class="addr">{{ s.ip }}:{{ s.port }}</span></div>
-            {% if s.online %}
-            <div class="meta">
-                {% if s.map %}<span class="tag green">🗺️ {{ s.map }}</span>{% endif %}
-                {% if s.game %}<span class="tag blue">{{ s.game }}</span>{% endif %}
-                {% if s.folder %}<span class="tag gray">{{ s.folder }}</span>{% endif %}
-                {% if s.version %}<span class="tag gray">v{{ s.version }}</span>{% endif %}
-                {% if s.platform %}
-                    <span class="tag {{ 'green' if s.platform == 'l' else 'gray' }}">🖥️ {{ 'Linux' if s.platform == 'l' else 'Windows' }}</span>
-                {% endif %}
-                {% if s.server_type %}
-                    <span class="tag gray">{{ '专用' if s.server_type == 'd' else ('监听' if s.server_type == 'l' else s.server_type) }}</span>
-                {% endif %}
-                {% if s.bots %}<span class="tag gray">🤖 {{ s.bots }} 机器人</span>{% endif %}
-                {% if s.vac is not none %}
-                    <span class="tag {{ 'green' if s.vac else 'gray' }}">🛡️ {{ 'VAC' if s.vac else '无VAC' }}</span>
-                {% endif %}
-            </div>
-            {% if s.players_on %}
-            <div class="players-list"><span class="label">👥 在线: </span>{{ s.players_on }}</div>
-            {% endif %}
-            {% else %}
-            <div class="meta"><span class="err">{{ s.err }}</span></div>
-            {% endif %}
+    <!-- 在线玩家卡 -->
+    {% if s.online %}
+    <div class="card">
+        <div class="card-title">
+            在线玩家 ({{ s.player_total }})
+            <span class="sub">按在线时长降序排序</span>
         </div>
-        {% endfor %}
-    {% else %}
-        <div class="empty">📭 暂无已保存的服务器<br><span style="font-size:13px">使用 /gmod-admin add &lt;别名&gt; &lt;IP&gt; [端口] 添加</span></div>
+        {% if players %}
+        <div class="pgrid">
+            {% for p in players %}
+            <div class="pitem">
+                <span class="n"><span class="idx">{{ p.idx }}.</span>{{ p.name }}</span>
+                <span class="t">{{ p.duration }}</span>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="empty">暂无玩家在线 / 服务器未提供玩家列表</div>
+        {% endif %}
+    </div>
     {% endif %}
 
-    <div class="footer">生成于 {{ time }}</div>
+    <div class="footer">
+        <div class="hint">
+            提示: 发送 /gmod help 查看指令帮助<br>
+            网络请求总耗时: {{ s.query_cost }}s
+        </div>
+        <div class="meta">生成于 {{ time }}</div>
+    </div>
 </div>
 </body>
 </html>
 """
+
+# ---------- 多服务器总览模板 ----------
+LIST_TMPL = """<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<style>""" + _COMMON_CSS + """
+</style>
+</head>
+<body>
+<div id="bgfill" style="{{ bg_style }}"></div>
+<div class="wrap">
+
+    {% if servers %}
+        {% for s in servers %}
+        <div class="card">
+            <div class="srv-head">
+                [{{ s.alias }}]服务器实时状态
+                {% if not s.online %}
+                    <span class="badge off">离线</span>
+                {% else %}
+                    <span class="badge {{ 'full' if s.players >= s.max_players and s.max_players else '' }}">
+                        在线 {{ s.players }}/{{ s.max_players }}
+                    </span>
+                {% endif %}
+            </div>
+            {% if s.online %}
+            <div class="grid2">
+                <div class="row"><span class="k">服务器名称</span><span class="v v-blue">{{ s.name or '-' }}</span></div>
+                <div class="row"><span class="k">密码</span><span class="v {{ 'v-red' if s.password else 'v-gray' }}">{{ '是' if s.password else '否' }}</span></div>
+                <div class="row"><span class="k">地址</span><span class="v v-blue">{{ s.ip }}:{{ s.port }}</span></div>
+                <div class="row"><span class="k">bot数量</span><span class="v v-gray">{{ s.bots }}</span></div>
+                <div class="row"><span class="k">游戏</span><span class="v v-green">{{ s.game or '-' }}</span></div>
+                <div class="row"><span class="k">VAC</span><span class="v {{ 'v-green' if s.vac else 'v-gray' }}">{{ '安全' if s.vac else '未启用' }}</span></div>
+                <div class="row"><span class="k">地图</span><span class="v v-pink">{{ s.map or '-' }}</span></div>
+                <div class="row"><span class="k">在线玩家</span><span class="v {{ 'v-red' if s.players >= s.max_players and s.max_players else 'v-orange' }}">{{ s.players }}/{{ s.max_players }}</span></div>
+                <div class="row"><span class="k">归类</span><span class="v v-purple">{{ s.folder or '-' }}</span></div>
+                <div class="row"><span class="k">版本</span><span class="v v-purple">{{ s.version or '-' }}</span></div>
+                <div class="row"><span class="k">AppID</span><span class="v v-gray">{{ s.app_id or '-' }}</span></div>
+                <div class="row"><span class="k">延迟</span><span class="v {{ s.ping_cls }}">{{ s.ping }} ms</span></div>
+                <div class="row"><span class="k">系统</span><span class="v v-gray">{{ s.platform_name }}</span></div>
+                <div class="row"><span class="k">服务器类型</span><span class="v v-gray">{{ s.type_name }}</span></div>
+            </div>
+            {% else %}
+            <div class="empty">❌ 服务器离线（{{ s.err }}）</div>
+            {% endif %}
+        </div>
+        {% endfor %}
+    {% else %}
+        <div class="card">
+            <div class="empty">📭 暂无已保存的服务器<br>
+                <span style="font-size:13px">使用 /gmod-admin add &lt;别名&gt; &lt;IP&gt; [端口] 添加</span>
+            </div>
+        </div>
+    {% endif %}
+
+    <div class="footer">
+        <div class="hint">
+            提示: 发送 /gmod help 查看指令帮助<br>
+            共 {{ servers|length }} 台服务器 · 网络请求总耗时: {{ cost }}s
+        </div>
+        <div class="meta">生成于 {{ time }}</div>
+    </div>
+</div>
+</body>
+</html>
+"""
+
 
 
 class GModServerQuery(Star):
@@ -198,11 +330,36 @@ class GModServerQuery(Star):
         kw = self._cfg("render_keywords", Config.RENDER_KEYWORDS)
         return kw if isinstance(kw, list) and kw else Config.RENDER_KEYWORDS
 
+    def _render_detail_enabled(self) -> bool:
+        """单服详情图开关，需同时开启 render_image。"""
+        if not self._render_enabled():
+            return False
+        return bool(self._cfg("render_detail", True))
+
     def _render_quality(self) -> int:
         try:
             return max(40, min(100, int(self._cfg("render_quality", Config.RENDER_QUALITY))))
         except (TypeError, ValueError):
             return Config.RENDER_QUALITY
+
+    def _render_width(self) -> int:
+        """渲染图宽度（像素），默认 1080（1080p）。"""
+        try:
+            w = int(self._cfg("render_width", Config.RENDER_WIDTH))
+        except (TypeError, ValueError):
+            return Config.RENDER_WIDTH
+        return max(480, min(2560, w))
+
+    def _local_t2i(self) -> str:
+        """本地 T2I 服务地址，未配置则返回空串。"""
+        v = self._cfg("render_local_t2i", "")
+        return v.strip() if isinstance(v, str) else ""
+
+    def _prefer_local_t2i(self) -> bool:
+        """是否优先走本地 T2I（需已配置地址）。"""
+        if not self._local_t2i():
+            return False
+        return bool(self._cfg("prefer_local_t2i", False))
 
     # ==================== 数据持久化 ====================
     def _load(self):
@@ -245,38 +402,102 @@ class GModServerQuery(Star):
         return all(ch in allowed for ch in s)
 
     # ==================== a2s 查询核心 ====================
+    @staticmethod
+    def _fmt_duration(seconds) -> str:
+        """把秒数格式化为 HH:MM:SS。拿不到有效值时返回 --:--。"""
+        try:
+            sec = int(seconds)
+        except (TypeError, ValueError):
+            return "--:--"
+        if sec < 0:
+            return "--:--"
+        h, rem = divmod(sec, 3600)
+        m, s = divmod(rem, 60)
+        return f"{h:02d}:{m:02d}:{s:02d}"
+
+    @staticmethod
+    def _platform_name(platform: str) -> str:
+        p = (platform or "").lower()
+        if p in ("l", "linux"):
+            return "Linux"
+        if p in ("w", "windows"):
+            return "Windows"
+        if p in ("m", "mac"):
+            return "macOS"
+        return "未知"
+
+    @staticmethod
+    def _type_name(server_type: str) -> str:
+        t = (server_type or "").lower()
+        if t in ("d", "dedicated"):
+            return "专用"
+        if t in ("l", "listen"):
+            return "监听"
+        if t in ("p", "proxymt"):
+            return "代理"
+        return "未知"
+
+    @staticmethod
+    def _ping_cls(ping: int) -> str:
+        """按延迟分色：<50 绿，<100 橙，其余红。"""
+        if ping is None:
+            return "v-gray"
+        if ping < 50:
+            return "v-green"
+        if ping < 100:
+            return "v-orange"
+        return "v-red"
+
     async def _query_one(self, alias, ip: str, port: int) -> dict:
         """查询单台服务器信息（a2s.info + a2s.players），返回字典。
         失败时带 online=False 与 err 说明，不影响其他服务器查询。
         """
+        import time as _time
+
         base = {"alias": alias, "ip": ip, "port": port}
+        started = _time.monotonic()
         try:
             loop = asyncio.get_running_loop()
             info = await asyncio.wait_for(
                 loop.run_in_executor(None, lambda: a2s.info((ip, port))),
                 timeout=self._timeout(),
             )
+            # 延迟取 info 查询耗时（毫秒），作为服务器响应延迟的近似值
+            ping = int((_time.monotonic() - started) * 1000)
 
             # 玩家列表是附属信息，失败不影响主信息
             players_on = ""
+            player_list = []
             try:
                 ps = await asyncio.wait_for(
                     loop.run_in_executor(None, lambda: a2s.players((ip, port))),
                     timeout=self._timeout(),
                 )
                 if ps:
-                    names = []
+                    entries = []
                     for p in ps:
-                        name = getattr(p, "name", "") or ""
-                        if name:
-                            names.append(name)
-                    shown = names[:8]
-                    if len(names) > 8:
-                        players_on = "、".join(shown) + f" 等{len(names)}人"
+                        pname = (getattr(p, "name", "") or "").strip() or "未知玩家"
+                        pdur = getattr(p, "duration", None)
+                        entries.append({"name": pname, "duration": pdur})
+                    # 按在线时长降序；无有效时长的排最后
+                    entries.sort(
+                        key=lambda x: (x["duration"] is None, -(x["duration"] or 0))
+                        if isinstance(x["duration"], (int, float)) else (True, 0)
+                    )
+                    for i, e in enumerate(entries, 1):
+                        player_list.append({
+                            "idx": i,
+                            "name": e["name"],
+                            "duration": self._fmt_duration(e["duration"]),
+                        })
+                    shown = [e["name"] for e in entries[:8]]
+                    if len(entries) > 8:
+                        players_on = "、".join(shown) + f" 等{len(entries)}人"
                     else:
                         players_on = "、".join(shown)
             except Exception:
                 players_on = ""
+                player_list = []
 
             base.update({
                 "online": True,
@@ -291,17 +512,391 @@ class GModServerQuery(Star):
                 "server_type": str(getattr(info, "server_type", "") or ""),
                 "platform": str(getattr(info, "platform", "") or ""),
                 "vac": getattr(info, "vac_enabled", None),
+                "password": bool(getattr(info, "password_protected", False)),
+                "app_id": getattr(info, "app_id", None),
+                "ping": ping,
                 "players_on": players_on,
+                "player_list": player_list,
+                "player_total": len(player_list),
+                "query_cost": f"{( _time.monotonic() - started):.2f}",
             })
         except asyncio.TimeoutError:
-            base.update({"online": False, "err": "查询超时"})
+            base.update({"online": False, "err": "查询超时", "player_list": [], "player_total": 0})
         except Exception as e:
-            base.update({"online": False, "err": str(e)[:40]})
+            base.update({"online": False, "err": str(e)[:40], "player_list": [], "player_total": 0})
         return base
+
+    # ==================== 渲染图公共 ====================
+    # AstrBot v4.13.0+ 的 file 类型配置，配置项里保存的是相对插件根目录的路径，
+    # 形如 "files/render_background/xxx.jpg"。不同版本上传落盘位置可能不同
+    # （data/plugins/<name>/files/... 或 data/plugins_data/<name>/files/... 等），
+    # 因此这里以 AstrBot 的 data 根为搜索范围，逐层尝试。
+    # 参考 astrbot/dashboard/services/config_service.py::upload_config_file
+    _BG_FOLDER = "render_background"   # 本插件背景图配置键
+
+    @staticmethod
+    def _find_data_root(base_dir: str) -> str:
+        """从插件目录向上回溯，定位 AstrBot 的 data 根目录。
+
+        data/plugins/<name>/main.py  ->  data
+        data/plugins_data/<name>/...  ->  data
+        """
+        cur = os.path.abspath(base_dir)
+        for _ in range(6):
+            parent = os.path.dirname(cur)
+            if parent == cur or parent in ("/", "/root", "/home", "/srv", "/opt"):
+                break
+            cur = parent
+            # 认定 parent 目录名为 data 时返回它
+            if os.path.basename(cur) == "data":
+                return cur
+        # 兜底猜测：插件目录的祖先两级（data/plugins/<name> 的第 2 层上级）
+        guess = os.path.abspath(os.path.join(base_dir, "..", ".."))
+        return guess
+
+    def _bg_search_roots(self) -> list:
+        """返回所有可能存放 file 类型上传文件的根目录（按优先级）。
+
+        AstrBot 不同版本上传落盘位置不同，已实测 v4.29.4 为：
+            <data>/plugin_data/<插件名>/files/<配置键>/<文件名>
+        因此这里既列出已知候选，也主动扫描 data 下所有包含同名插件目录的位置。
+        """
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        plugin_name = os.path.basename(base_dir)
+        data_root = self._find_data_root(base_dir)
+
+        # 1) 已实测/已知的候选（第一项即 v4.29.4 的真实位置）
+        roots = [
+            os.path.join(data_root, "plugin_data", plugin_name),   # 实测 v4.29.4
+            base_dir,                                              # 插件源码根
+            os.path.join(base_dir, "files"),
+            os.path.join(base_dir, "files", self._BG_FOLDER),
+            os.path.join(base_dir, "assets"),
+            os.path.join(data_root, "plugins", plugin_name),        # 旧版
+            os.path.join(data_root, "plugins_data", plugin_name),   # 备选拼写
+        ]
+
+        # 2) 主动扫描：data 下任一子目录中若存在同名插件目录，一并纳入
+        try:
+            if os.path.isdir(data_root):
+                for entry in sorted(os.listdir(data_root)):
+                    cand = os.path.join(data_root, entry, plugin_name)
+                    if os.path.isdir(cand):
+                        roots.append(cand)
+        except Exception as e:
+            logger.warning(f"[gmod] 扫描 data 目录失败: {e}")
+
+        roots.extend([
+            os.path.join(data_root, "files"),
+            os.path.join(data_root, "files", plugin_name),
+            data_root,
+            os.getcwd(),
+        ])
+
+        # 去重并保持顺序
+        seen = set()
+        out = []
+        for r in roots:
+            r = os.path.abspath(r)
+            if r not in seen:
+                seen.add(r)
+                out.append(r)
+        return out
+
+    def _resolve_bg_path(self, val) -> str:
+        """从配置值中解析出背景图实际文件路径。
+
+        支持的结构：
+          - str  "/a/b.jpg" 或 "files/render_background/bg.png"
+          - list ["files/render_background/bg.png", ...]
+          - dict {"path": ...} / {"file": ...} / {"name": ...} 等
+        """
+        if not val:
+            return ""
+        candidates = []
+        if isinstance(val, str):
+            candidates.append(val)
+        elif isinstance(val, (list, tuple)):
+            for item in val:
+                p = self._resolve_bg_path(item)
+                if p:
+                    return p
+            return ""
+        elif isinstance(val, dict):
+            for key in ("path", "file", "file_path", "abs_path", "url",
+                        "name", "filename", "id", "uuid"):
+                if val.get(key):
+                    candidates.append(str(val[key]))
+        else:
+            return ""
+
+        roots = self._bg_search_roots()
+        checked = []
+        for c in candidates:
+            c = (c or "").strip()
+            if not c:
+                continue
+            # 1) 绝对路径直接判定
+            if os.path.isabs(c) and os.path.isfile(c):
+                logger.info(f"[gmod] 背景图命中（绝对路径）: {c}")
+                return c
+            # 2) 相对路径在所有候选根下逐一尝试
+            for d in roots:
+                try:
+                    p = os.path.normpath(os.path.join(d, c))
+                except Exception:
+                    continue
+                checked.append(p)
+                if os.path.isfile(p):
+                    logger.info(f"[gmod] 背景图命中: {p}")
+                    return p
+
+        # 3) 兜底：在候选根下的 files/<BG_FOLDER>/ 目录里找第一张图
+        for d in roots:
+            for probe in (os.path.join(d, "files", self._BG_FOLDER),
+                          os.path.join(d, self._BG_FOLDER)):
+                if not os.path.isdir(probe):
+                    continue
+                try:
+                    for fn in sorted(os.listdir(probe)):
+                        if fn.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
+                            p = os.path.join(probe, fn)
+                            logger.info(f"[gmod] 背景图命中（目录兜底）: {p}")
+                            return p
+                except Exception as e:
+                    logger.warning(f"[gmod] 读取目录失败 {probe}: {e}")
+
+        # 4) 最后兜底：在 data 根内按文件名限深反查
+        found = self._search_uploaded_file(candidates)
+        if found:
+            return found
+
+        logger.warning(
+            f"[gmod] 背景图未能定位。原始值: {val!r}\n"
+            f"  已尝试根目录: {roots}\n"
+            f"  已尝试路径(前6条): {checked[:6]}\n"
+            f"  提示: 可在服务器执行 find <data根> -name '<文件名>' 确认实际位置"
+        )
+        return ""
+
+    def _search_uploaded_file(self, candidates) -> str:
+        """在 AstrBot 数据目录附近有限深度递归查找上传的文件。
+        file 类型配置常只保存文件名或 UUID，需要反查真实路径。
+        """
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        # 优先从插件根开始（file 类型上传落在 <插件根>/files/...），
+        # 再补上 AstrBot 的 data 根（不同版本落盘位置有差异）
+        roots = [base_dir]
+        data_root = self._find_data_root(base_dir)
+        if os.path.isdir(data_root):
+            roots.append(data_root)
+        cur = base_dir
+        for _ in range(3):
+            parent = os.path.dirname(cur)
+            if parent == cur or parent in ("/", "/storage", "/storage/emulated",
+                                          "/storage/emulated/0", "/sdcard"):
+                break
+            if parent not in roots:
+                roots.append(parent)
+            cur = parent
+
+        names = set()
+        for c in candidates:
+            c = (c or "").strip().strip("/\\")
+            if not c:
+                continue
+            names.add(os.path.basename(c))
+            names.add(c)
+        if not names:
+            return ""
+
+        # 反查只认图片扩展名，避免匹配到同名无关文件
+        img_exts = (".jpg", ".jpeg", ".png", ".webp")
+
+        for root in roots:
+            for dirpath, dirnames, filenames in os.walk(root):
+                depth = dirpath[len(root):].count(os.sep)
+                if depth >= 4:
+                    dirnames[:] = []
+                    continue
+                # 跳过无关/超大目录，减少遍历成本
+                dirnames[:] = [
+                    d for d in dirnames
+                    if d not in (".git", "__pycache__", "node_modules",
+                                 "site-packages", ".venv", "venv", "dist-info")
+                ]
+                for fn in filenames:
+                    if fn in names and fn.lower().endswith(img_exts):
+                        p = os.path.join(dirpath, fn)
+                        if os.path.isfile(p):
+                            logger.info(f"[gmod] 背景图已定位: {p}")
+                            return p
+        return ""
+
+    def _bg_style(self) -> str:
+        """生成背景样式。优先级：
+           1) 插件配置项 render_background（WebUI 上传的本地图片）
+           2) 插件目录 assets/bg.jpg|jpeg|png|webp
+           3) 柔和渐变兜底
+        图片统一转 base64 内联，避免云端 T2I 拉取外链超时。
+        """
+        import base64
+
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        raw_cfg = self._cfg("render_background", [])
+        path = self._resolve_bg_path(raw_cfg)
+        if not path:
+            for name in ("bg.jpg", "bg.jpeg", "bg.png", "bg.webp"):
+                p = os.path.join(base_dir, "assets", name)
+                if os.path.isfile(p):
+                    path = p
+                    break
+
+        if path:
+            try:
+                ext = path.rsplit(".", 1)[-1].lower()
+                mime = "jpeg" if ext in ("jpg", "jpeg") else ("png" if ext == "png" else "webp")
+                if ext not in ("jpg", "jpeg", "png", "webp"):
+                    raise ValueError(f"不支持的图片格式: {ext}")
+                with open(path, "rb") as f:
+                    b64 = base64.b64encode(f.read()).decode("ascii")
+                logger.debug(f"背景图已加载: {path}")
+                # 只输出图片本身；铺满/居中/裁切由 CSS 中的 #bgfill 统一控制
+                return f"background-image:url('data:image/{mime};base64,{b64}');"
+            except Exception as e:
+                logger.warning(f"加载背景图失败({path}): {e}")
+
+        # 回退：柔和渐变（若配置了但没找到文件，日志里会有提示）
+        if not path and raw_cfg:
+            logger.warning(f"[gmod] 背景图回退为默认渐变。配置原始值: {raw_cfg!r}")
+        return (
+            "background-image:linear-gradient(160deg,#e8f2fc 0%,#cfe3f5 45%,#bcd6ee 100%);"
+        )
+
+    def _render_options(self) -> dict:
+        """渲染选项。full_page 保证长图完整不裁切。"""
+        return {
+            "type": "jpeg",
+            "quality": self._render_quality(),
+            "full_page": True,
+            "width": self._render_width(),
+        }
+
+    async def _render_via_custom_endpoint(self, tmpl: str, data: dict, endpoint: str) -> str:
+        """直接调用指定的 text2img 端点渲染（用于本地 T2I / 自定义端点）。
+
+        与 AstrBot NetworkRenderStrategy 的协议保持一致：
+            POST {endpoint}/generate  {"tmpl":..., "tmpldata":..., "json":True, "options":...}
+        返回图片 URL；失败抛异常。
+        """
+        import aiohttp
+
+        url = endpoint.removesuffix("/")
+        if not url.endswith("text2img"):
+            url += "/text2img"
+        payload = {
+            "tmpl": tmpl,
+            "tmpldata": data,
+            "json": True,
+            "options": self._render_options(),
+        }
+        timeout = aiohttp.ClientTimeout(total=max(15, self._timeout() * 4))
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+            async with session.post(f"{url}/generate", json=payload) as resp:
+                if resp.status != 200:
+                    raise RuntimeError(f"HTTP {resp.status}")
+                ret = await resp.json()
+                img_id = (ret.get("data") or {}).get("id")
+                if not img_id:
+                    raise RuntimeError(f"响应缺少 data.id: {str(ret)[:120]}")
+                return f"{url}/{img_id}"
+
+    async def _render_html(self, tmpl: str, data: dict) -> str:
+        """统一渲染入口，渲染优先级（可配置）：
+
+            prefer_local_t2i = false（默认）: 外部 T2I → 本地 T2I → 抛异常（由调用方回退文字）
+            prefer_local_t2i = true          : 本地 T2I → 外部 T2I → 抛异常
+
+        未配置本地 T2I 地址时，本地环节自动跳过。
+        """
+        local = self._local_t2i()
+        errors = []
+
+        async def _try_local():
+            if not local:
+                return None
+            try:
+                url = await self._render_via_custom_endpoint(tmpl, data, local)
+                logger.info(f"[gmod] 已用本地 T2I 渲染: {local}")
+                return url
+            except Exception as e:
+                errors.append(f"本地T2I({local}): {e}")
+                logger.warning(f"[gmod] 本地 T2I 渲染失败: {e}")
+                return None
+
+        async def _try_remote():
+            try:
+                url = await self.html_render(tmpl, data, options=self._render_options())
+                return url
+            except TypeError:
+                # 旧版 html_render 不支持 options
+                try:
+                    return await self.html_render(tmpl, data)
+                except Exception as e:
+                    errors.append(f"外部T2I: {e}")
+                    return None
+            except Exception as e:
+                errors.append(f"外部T2I: {e}")
+                logger.warning(f"[gmod] 外部 T2I 渲染失败: {e}")
+                return None
+
+        order = [_try_local, _try_remote] if self._prefer_local_t2i() else [_try_remote, _try_local]
+        for fn in order:
+            url = await fn()
+            if url:
+                return url
+
+        raise RuntimeError("渲染失败（外部/本地 T2I 均不可用）: " + " | ".join(errors))
+
+    # ==================== 单服务器详情渲染图 ====================
+    async def _render_detail_image(self, alias, ip: str, port: int) -> str:
+        """查询单台服务器并渲染为详情图，返回图片 URL。"""
+        import datetime
+
+        info = await self._query_one(alias, ip, port)
+        info.update({
+            "platform_name": self._platform_name(info.get("platform", "")),
+            "type_name": self._type_name(info.get("server_type", "")),
+            "ping_cls": self._ping_cls(info.get("ping")),
+            "ping": info.get("ping") if info.get("ping") is not None else "--",
+            "query_cost": info.get("query_cost", "0.00"),
+        })
+        data = {
+            "s": info,
+            "players": info.get("player_list", []),
+            "bg_style": self._bg_style(),
+            "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+        }
+        return await self._render_html(DETAIL_TMPL, data)
+
+    async def _reply_detail(self, event, alias, ip: str, port: int):
+        """统一出口：渲染详情图；未开启渲染或渲染失败时回退为文字。
+        返回要 yield 的结果对象。
+        """
+        if self._render_detail_enabled():
+            try:
+                url = await self._render_detail_image(alias, ip, port)
+                return event.image_result(url)
+            except Exception as e:
+                logger.error(f"单服详情渲染失败，回退文字: {e}")
+                text = await self._query_server(alias, ip, port)
+                return event.plain_result(text + "\n" + self._render_fail_hint(e))
+        text = await self._query_server(alias, ip, port)
+        return event.plain_result(text)
 
     # ==================== 单服务器查询 & 格式化 ====================
     async def _query_server(self, alias, ip: str, port: int) -> str:
-        """查询单台服务器并格式化为文本返回。"""
+        """查询单台服务器并格式化为文本返回（渲染失败时的回退）。"""
         try:
             info = await self._query_one(alias, ip, port)
         except Exception as e:
@@ -316,8 +911,11 @@ class GModServerQuery(Star):
         text = (
             f"{title}服务器信息:\n"
             f"    名称: {name}\n"
-            f"    地图: {info.get('map', '')}\n"
-            f"    当前在线: {info.get('players', 0)}/{info.get('max_players', 0)}"
+            f"    地址: {info.get('ip')}:{info.get('port')}\n"
+            f"    游戏: {info.get('game', '') or '-'}\n"
+            f"    地图: {info.get('map', '') or '-'}\n"
+            f"    当前在线: {info.get('players', 0)}/{info.get('max_players', 0)}\n"
+            f"    延迟: {info.get('ping', '-')} ms"
         )
         players_on = info.get("players_on", "") or ""
         if players_on:
@@ -325,15 +923,24 @@ class GModServerQuery(Star):
         return text
 
     # ==================== 列表渲染图 ====================
-    async def _render_list_image(self) -> str:
-        """并发查询所有服务器，将列表渲染为图片，返回图片 URL。"""
-        import datetime
-
+    async def _query_all(self) -> list:
+        """并发查询所有服务器，返回原始查询结果列表（不涉及渲染）。"""
         tasks = []
         for alias, srv in self.servers.items():
             tasks.append(self._query_one(alias, srv["ip"], srv["port"]))
-        results = await asyncio.gather(*tasks) if tasks else []
+        return await asyncio.gather(*tasks) if tasks else []
 
+    async def _render_list_image(self) -> str:
+        """并发查询所有服务器，将列表渲染为图片，返回图片 URL。"""
+        results = await self._query_all()
+        return await self._render_list_image_from(results)
+
+    async def _render_list_image_from(self, results) -> str:
+        """用已有的查询结果渲染总览图，避免重复查询。"""
+        import datetime
+        import time as _t
+
+        _started = _t.monotonic()
         servers_data = []
         for info in results:
             servers_data.append({
@@ -346,31 +953,25 @@ class GModServerQuery(Star):
                 "server_type": info.get("server_type", ""), "platform": info.get("platform", ""),
                 "vac": info.get("vac", None), "players_on": info.get("players_on", ""),
                 "err": info.get("err", ""),
+                "password": info.get("password", False),
+                "app_id": info.get("app_id", None),
+                "ping": info.get("ping", "--"),
+                "ping_cls": self._ping_cls(info.get("ping")),
+                "platform_name": self._platform_name(info.get("platform", "")),
+                "type_name": self._type_name(info.get("server_type", "")),
             })
 
         data = {
             "servers": servers_data,
+            "bg_style": self._bg_style(),
+            "cost": f"{(_t.monotonic() - _started):.2f}",
             "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
         }
-
-        # 注意：options 不用数字 scale（避免云端 T2I 返回 HTTP 422）。
-        # 用 quality(full_page 保证整张图) + type jpeg 控制输出高画质。
-        try:
-            url = await self.html_render(
-                LIST_TMPL, data,
-                options={
-                    "type": "jpeg",
-                    "quality": self._render_quality(),
-                    "full_page": True,
-                },
-            )
-        except TypeError:
-            # 兼容不支持 options 参数的旧版 AstrBot html_render
-            url = await self.html_render(LIST_TMPL, data)
-        return url
+        return await self._render_html(LIST_TMPL, data)
 
     # ==================== 列表文本 ====================
     def _list_text(self) -> str:
+        """仅列出已保存的别名/地址（管理视角，不含实时状态）。"""
         if not self.servers:
             return "📭 暂无已保存的服务器。\n可用 /gmod-admin add <别名> <IP> [端口] 添加。"
         lines = [f"📋 已保存的服务器 ({len(self.servers)} 个):"]
@@ -378,6 +979,54 @@ class GModServerQuery(Star):
             lines.append(f"  • [{alias}] {srv['ip']}:{srv['port']}")
         lines.append("\n在群里发送 [服务器列表] 可查看列表渲染图。")
         return "\n".join(lines)
+
+    @staticmethod
+    def _is_t2i_error(err: Exception) -> bool:
+        """判断异常是否来自 T2I（HTML 转图片）服务不可用。"""
+        s = str(err).lower()
+        keys = ("t2i", "endpoint", "text2img", "http 503", "http 502",
+                "http 504", "cannot connect to host", "all endpoints failed",
+                "timeout", "connection")
+        return any(k in s for k in keys)
+
+    def _servers_to_text(self, results) -> str:
+        """把并发查询结果格式化为完整文本总览（渲染失败时的回退）。
+
+        不依赖 T2I，输出与渲染图等价的服务器状态信息。
+        """
+        if not results:
+            return self._list_text()
+
+        lines = [f"📋 服务器状态总览（{len(results)} 台）", ""]
+        for i, info in enumerate(results, 1):
+            alias = info.get("alias") or info.get("ip", "")
+            lines.append(f"【{i}】[{alias}] {info.get('ip')}:{info.get('port')}")
+            if not info.get("online"):
+                lines.append(f"  ❌ 离线（{info.get('err', '未知原因')}）")
+                lines.append("")
+                continue
+            name = info.get("name") or "-"
+            lines.append(f"  名称：{name}")
+            lines.append(f"  地图：{info.get('map') or '-'}")
+            lines.append(f"  玩家：{info.get('players', 0)}/{info.get('max_players', 0)}"
+                         f"  | 延迟：{info.get('ping', '-')} ms"
+                         f"  | 密码：{'是' if info.get('password') else '否'}")
+            pv = info.get("players_on") or ""
+            if pv:
+                lines.append(f"  在线：{pv}")
+            lines.append("")
+
+        text = "\n".join(lines).rstrip()
+        # 超长时截断，避免部分平台消息长度上限导致发送失败
+        if len(text) > 1800:
+            text = text[:1800] + "\n…（内容过长已截断）"
+        return text
+
+    def _render_fail_hint(self, err: Exception) -> str:
+        """渲染失败时给用户的说明（区分 T2I 故障与其他问题）。"""
+        if self._is_t2i_error(err):
+            return "（图片渲染服务暂时不可用，已改用文字显示。可稍后再试，或在 AstrBot 中配置本地 t2i）"
+        return "（图片渲染失败，已改用文字显示）"
 
     # ==================== 帮助文本 ====================
     def _help_text(self) -> str:
@@ -420,11 +1069,20 @@ class GModServerQuery(Star):
         # 1) 列表渲染关键词
         if self._render_enabled() and message_str in self._render_keywords():
             try:
-                url = await self._render_list_image()
+                results = await self._query_all()
+            except Exception as e:
+                logger.error(f"服务器查询失败: {e}")
+                yield event.plain_result(self._list_text())
+                return
+            try:
+                url = await self._render_list_image_from(results)
                 yield event.image_result(url)
             except Exception as e:
-                logger.error(f"服务器列表渲染失败: {e}")
-                yield event.plain_result(self._list_text())
+                # 渲染失败（常见于外部 T2I 服务不可用）→ 回退为完整文本总览
+                logger.error(f"服务器列表渲染失败，回退文字: {e}")
+                yield event.plain_result(
+                    self._servers_to_text(results) + "\n" + self._render_fail_hint(e)
+                )
             return
 
         # 2) 匹配服务器别名
@@ -442,8 +1100,7 @@ class GModServerQuery(Star):
             return  # 静默忽略
 
         srv = self.servers[hit]
-        result = await self._query_server(hit, srv["ip"], srv["port"])
-        yield event.plain_result(result)
+        yield await self._reply_detail(event, hit, srv["ip"], srv["port"])
 
     # ==================== 主指令 /gmod ====================
     @filter.command("gmod", alias={"GMOD", "服务器"})
@@ -476,8 +1133,7 @@ class GModServerQuery(Star):
         raw_param = parts[1]
         if raw_param in self.servers:
             srv = self.servers[raw_param]
-            result = await self._query_server(raw_param, srv["ip"], srv["port"])
-            yield event.plain_result(result)
+            yield await self._reply_detail(event, raw_param, srv["ip"], srv["port"])
             return
 
         if not self._looks_like_address(raw_param):
@@ -489,8 +1145,7 @@ class GModServerQuery(Star):
 
         ip = raw_param
         port = int(parts[2]) if len(parts) > 2 else self._default_port()
-        result = await self._query_server(None, ip, port)
-        yield event.plain_result(result)
+        yield await self._reply_detail(event, None, ip, port)
 
     # ==================== 管理指令组 /gmod-admin ====================
     @filter.command_group("gmod-admin")
