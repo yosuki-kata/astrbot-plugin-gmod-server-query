@@ -186,8 +186,10 @@ If **prefer_local_t2i** is enabled, the order becomes Local T2I → Remote T2I �
   All network I/O is wrapped in **asyncio.wait_for**; a2s fields always use **getattr** fallback.
 - 玩家列表查询失败，不影响主信息展示。
   A player-list query failure does not affect the main info display.
-- 数据文件 **servers.json** 的路径相对于插件目录；JSON 读写均使用 try/except 兜底。
-  The data file **servers.json** path is relative to the plugin directory; JSON read / write uses try / except fallback.
+- 数据文件 **servers.json** 保存在 AstrBot 的 **data/plugin_data/gmod_a2s_server_query** 目录下，符合持久化数据规范，便于备份、迁移与审计；JSON 读写均使用 try/except 兜底。旧版本遗留在插件目录的 **servers.json** 会在启动时自动迁移。
+  The data file **servers.json** is stored under AstrBot's **data/plugin_data/gmod_a2s_server_query**, following the persistence convention for backup, migration and auditing. A legacy **servers.json** left in the plugin directory is migrated automatically on startup.
+- 调用自定义 T2I 端点时 **trust_env=False**，不读取环境变量中的代理配置，避免请求被意外转发到未知代理。
+  Calls to the custom T2I endpoint use **trust_env=False**, ignoring proxy settings from environment variables so requests are not silently rerouted.
 
 ---
 

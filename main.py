@@ -25,6 +25,7 @@ from astrbot.api.event import filter  # 显式导入 filter，避免与 Python �
 # ==================== 配置常量 ====================
 class Config:
     """配置项默认值集中定义，便于与 _conf_schema.json 核对。"""
+    NAME = "gmod_a2s_server_query"   # 与 metadata.yaml 的 name 一致
     DEFAULT_PORT = 27015        # default_port
     QUERY_TIMEOUT = 5           # query_timeout
     ENABLE_LISTEN = True        # enable_listen
@@ -291,7 +292,8 @@ class GModServerQuery(Star):
         super().__init__(context)
         self.config = config
         self.servers = {}  # 别名 -> {"ip": str, "port": int}
-        self.data_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "servers.json")
+        self.data_file = self._resolve_data_file()
+        self._migrate_legacy_data()
         self._load()
 
     # ==================== 配置读取 ====================
@@ -362,6 +364,53 @@ class GModServerQuery(Star):
         return bool(self._cfg("prefer_local_t2i", False))
 
     # ==================== 数据持久化 ====================
+    def _resolve_data_file(self) -> str:
+        """确定 servers.json 的存放路径。
+
+        规范要求持久化数据保存在 AstrBot 的 data/plugin_data/<插件名> 下，
+        而不是插件源码目录（否则重装、升级会丢数据，也不利于迁移与审计）。
+        优先用官方 StarTools.get_data_dir()，失败时按目录结构自行推导兜底。
+        """
+        plugin_name = Config.NAME
+        # 1) 官方 API（AstrBot 4.x 提供）
+        try:
+            from astrbot.core.star.star_tools import StarTools
+            d = StarTools.get_data_dir(plugin_name)
+            if d:
+                return str(os.path.join(str(d), "servers.json"))
+        except Exception as e:
+            logger.debug(f"[gmod] StarTools.get_data_dir 不可用，改用路径推导: {e}")
+
+        # 2) 自行推导 data/plugin_data/<name>
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        data_root = self._find_data_root(base_dir) or base_dir
+        for sub in ("plugin_data", "plugins_data"):
+            d = os.path.join(data_root, sub, plugin_name)
+            try:
+                os.makedirs(d, exist_ok=True)
+                return os.path.join(d, "servers.json")
+            except Exception:
+                continue
+
+        # 3) 最后兜底：插件目录（与旧版行为一致，至少不丢功能）
+        logger.warning("[gmod] 无法创建 plugin_data 目录，servers.json 将保存在插件目录")
+        return os.path.join(base_dir, "servers.json")
+
+    def _migrate_legacy_data(self):
+        """把旧版本留在插件目录的 servers.json 迁移到新位置。"""
+        legacy = os.path.join(os.path.dirname(os.path.abspath(__file__)), "servers.json")
+        if os.path.abspath(legacy) == os.path.abspath(self.data_file):
+            return
+        if not os.path.isfile(legacy) or os.path.exists(self.data_file):
+            return
+        try:
+            import shutil
+            os.makedirs(os.path.dirname(self.data_file), exist_ok=True)
+            shutil.copy2(legacy, self.data_file)
+            logger.info(f"[gmod] 已将 servers.json 迁移到: {self.data_file}")
+        except Exception as e:
+            logger.warning(f"[gmod] servers.json 迁移失败: {e}")
+
     def _load(self):
         """从 servers.json 加载数据。文件缺失或损坏时静默重置。"""
         if not os.path.exists(self.data_file):
@@ -801,7 +850,8 @@ class GModServerQuery(Star):
             "options": self._render_options(),
         }
         timeout = aiohttp.ClientTimeout(total=max(15, self._timeout() * 4))
-        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+        # trust_env=False：不读取环境变量中的代理配置，避免请求被意外劫持到未知代理
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
             async with session.post(f"{url}/generate", json=payload) as resp:
                 if resp.status != 200:
                     raise RuntimeError(f"HTTP {resp.status}")
