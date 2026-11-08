@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""GMod 服务器查询插件（重制版 v1.0.4）
+"""GMod 服务器查询插件（重制版 v1.1.0）
 
 基于原 v3.3.2 的全部功能彻底重写，采用更清晰的结构与命名。
 功能涵盖：别名管理、IP/别名查询、超时控制、消息监听、服务器列表渲染图、可视化配置。
@@ -652,12 +652,29 @@ class GModServerQuery(Star):
                 out.append(r)
         return out
 
+    def _resolve_all_bg_paths(self, val) -> list:
+        """把配置值里**所有能定位到的**背景图路径全部收集出来（不随机、不截断）。
+
+        用于多图场景下的随机抽取：只有先拿到完整候选集，随机才有意义。
+        """
+        if not val:
+            return []
+        out = []
+        if isinstance(val, (list, tuple)):
+            for item in val:
+                for p in self._resolve_all_bg_paths(item):
+                    if p not in out:
+                        out.append(p)
+            return out
+        p = self._resolve_bg_path(val)
+        return [p] if p else []
+
     def _resolve_bg_path(self, val) -> str:
         """从配置值中解析出背景图实际文件路径。
 
         支持的结构：
           - str  "/a/b.jpg" 或 "files/render_background/bg.png"
-          - list ["files/render_background/bg.png", ...]
+          - list ["files/render_background/bg.png", ...]  → 随机抽取一张
           - dict {"path": ...} / {"file": ...} / {"name": ...} 等
         """
         if not val:
@@ -666,11 +683,18 @@ class GModServerQuery(Star):
         if isinstance(val, str):
             candidates.append(val)
         elif isinstance(val, (list, tuple)):
-            for item in val:
-                p = self._resolve_bg_path(item)
-                if p:
-                    return p
-            return ""
+            # 多图：先收集全部可用路径，再随机抽一张（单张时等于原行为）
+            import random
+
+            found = self._resolve_all_bg_paths(val)
+            if not found:
+                return ""
+            if len(found) == 1:
+                logger.info(f"[gmod] 背景图命中: {found[0]}")
+                return found[0]
+            picked = random.choice(found)
+            logger.info(f"[gmod] 背景图随机命中（{len(found)} 张可选）: {picked}")
+            return picked
         elif isinstance(val, dict):
             for key in ("path", "file", "file_path", "abs_path", "url",
                         "name", "filename", "id", "uuid"):
@@ -782,42 +806,119 @@ class GModServerQuery(Star):
                             return p
         return ""
 
-    def _bg_style(self) -> str:
-        """生成背景样式。优先级：
-           1) 插件配置项 render_background（WebUI 上传的本地图片）
-           2) 插件目录 assets/bg.jpg|jpeg|png|webp
-           3) 柔和渐变兜底
-        图片统一转 base64 内联，避免云端 T2I 拉取外链超时。
+    def _load_bg_b64(self, path: str) -> str:
+        """读取背景图并转 base64，带进程内缓存。
+
+        缓存键 = 绝对路径 + mtime + size，所以同名文件被替换后会自动失效重读，
+        不会出现「换了图但渲染还是旧背景」的问题。
+        多张大图（1080p 背景常见 1-3 MB）每次渲染都重读+base64 很吃内存和时间，
+        缓存后只有首次读取有成本。
         """
         import base64
 
+        try:
+            st = os.stat(path)
+            key = (os.path.abspath(path), int(st.st_mtime), int(st.st_size), st.st_ino)
+        except Exception:
+            # stat 失败（文件消失/权限问题）直接放弃缓存，走原路径
+            with open(path, "rb") as f:
+                return base64.b64encode(f.read()).decode("ascii")
+
+        cache = self.__dict__.setdefault("_bg_b64_cache", {})
+        hit = cache.get(key)
+        if hit is not None:
+            logger.debug(f"[gmod] 背景图命中缓存: {path}")
+            return hit
+
+        with open(path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode("ascii")
+
+        # 只保留少量条目，避免长时间运行后累积内存
+        if len(cache) >= 8:
+            cache.clear()
+        cache[key] = b64
+        logger.debug(f"[gmod] 背景图已加载并缓存: {path} ({st.st_size} bytes)")
+        return b64
+
+    def _assets_bg_candidates(self, base_dir: str) -> list:
+        """返回 assets 目录下所有可用的背景图候选，供随机抽取。
+
+        优先取约定的 bg.jpg / bg.jpeg / bg.png / bg.webp；
+        同时扫描目录下任意其他图片文件（如 1.jpg、2.png），
+        方便用户直接丢多张图进去做轮换，不必改名。
+        """
+        img_exts = (".jpg", ".jpeg", ".png", ".webp")
+        assets = os.path.join(base_dir, "assets")
+        if not os.path.isdir(assets):
+            return []
+
+        cands = []
+        # 1) 约定的固定文件名（优先，保持向后兼容）
+        for name in ("bg.jpg", "bg.jpeg", "bg.png", "bg.webp"):
+            p = os.path.join(assets, name)
+            if os.path.isfile(p):
+                cands.append(p)
+
+        # 2) 目录内其他图片文件，按文件名排序保证结果可预期
+        try:
+            for fn in sorted(os.listdir(assets)):
+                if not fn.lower().endswith(img_exts):
+                    continue
+                p = os.path.join(assets, fn)
+                if os.path.isfile(p) and p not in cands:
+                    cands.append(p)
+        except Exception as e:
+            logger.warning(f"[gmod] 扫描 assets 目录失败: {e}")
+
+        return cands
+
+    def _bg_style(self) -> str:
+        """生成背景样式。严格优先级：
+           1) 插件配置项 render_background（WebUI 上传，多张时随机抽取）
+           2) 插件目录 assets/bg.jpg|jpeg|png|webp（多张时也随机）
+           3) 柔和渐变兜底
+
+        关键点：配置项里的图**全部定位不到**时，要回退到 assets，
+        而不是直接掉到渐变。这样用户误删上传文件后仍能看到默认背景图。
+        图片统一转 base64 内联，避免云端 T2I 拉取外链超时；读取结果带缓存。
+        """
+        import random
+
         base_dir = os.path.dirname(os.path.abspath(__file__))
+
+        # ---------- 优先级 1：配置项 ----------
         raw_cfg = self._cfg("render_background", [])
         path = self._resolve_bg_path(raw_cfg)
-        if not path:
-            for name in ("bg.jpg", "bg.jpeg", "bg.png", "bg.webp"):
-                p = os.path.join(base_dir, "assets", name)
-                if os.path.isfile(p):
-                    path = p
-                    break
+        source = "配置项"
 
+        # ---------- 优先级 2：assets 目录 ----------
+        if not path:
+            cands = self._assets_bg_candidates(base_dir)
+            if cands:
+                path = random.choice(cands)
+                source = "assets"
+                if len(cands) > 1:
+                    logger.info(f"[gmod] assets 背景随机命中（{len(cands)} 张可选）: {path}")
+                else:
+                    logger.info(f"[gmod] assets 背景命中: {path}")
+            elif raw_cfg:
+                # 配置了但找不到，assets 也没有 —— 这种情况值得告警
+                logger.warning(f"[gmod] 背景图回退为默认渐变。配置原始值: {raw_cfg!r}")
+
+        # ---------- 优先级 3：渐变 ----------
         if path:
             try:
                 ext = path.rsplit(".", 1)[-1].lower()
-                mime = "jpeg" if ext in ("jpg", "jpeg") else ("png" if ext == "png" else "webp")
                 if ext not in ("jpg", "jpeg", "png", "webp"):
                     raise ValueError(f"不支持的图片格式: {ext}")
-                with open(path, "rb") as f:
-                    b64 = base64.b64encode(f.read()).decode("ascii")
-                logger.debug(f"背景图已加载: {path}")
+                mime = "jpeg" if ext in ("jpg", "jpeg") else ("png" if ext == "png" else "webp")
+                b64 = self._load_bg_b64(path)
+                logger.debug(f"[gmod] 使用背景图（来源: {source}）: {path}")
                 # 只输出图片本身；铺满/居中/裁切由 CSS 中的 #bgfill 统一控制
                 return f"background-image:url('data:image/{mime};base64,{b64}');"
             except Exception as e:
                 logger.warning(f"加载背景图失败({path}): {e}")
 
-        # 回退：柔和渐变（若配置了但没找到文件，日志里会有提示）
-        if not path and raw_cfg:
-            logger.warning(f"[gmod] 背景图回退为默认渐变。配置原始值: {raw_cfg!r}")
         return (
             "background-image:linear-gradient(160deg,#e8f2fc 0%,#cfe3f5 45%,#bcd6ee 100%);"
         )

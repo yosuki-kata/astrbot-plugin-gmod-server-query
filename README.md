@@ -31,8 +31,8 @@ Built from scratch by rewriting the old v3.3.2 — returning to **1.0** as a fre
   **List render image**: Sending "服务器列表" or running **/gmod list** generates a high-quality JPEG list image (quality and width configurable, 1080p by default).
 - **单服详情图**：查询单台服务器时渲染为详情卡片，包含玩家名单与服务器参数。
   **Detail image**: Querying a single server renders a detail card with the player list and server properties.
-- **背景图**：支持上传自定义背景图，铺满整张长图不失真，未配置时使用内置渐变。
-  **Background**: Upload a custom background that fills the entire long image; falls back to a built-in gradient.
+- **背景图**：支持上传多张自定义背景图，每次渲染随机选用一张；未配置或图片失效时自动回退插件内置的默认背景图，铺满整张长图不失真。
+  **Background**: Upload multiple custom backgrounds and one is picked at random per render; falls back to the bundled default background when unset or missing, filling the entire long image.
 - **三级渲染兜底**：外部 T2I → 本地 T2I → 文字输出，任一渲染服务故障都能给出完整文字总览。
   **Three-level render fallback**: Remote T2I → Local T2I → Plain text, always delivering a complete text summary when renderers fail.
 - **可视化配置**：通过 AstrBot 管理面板可视化配置全部选项。
@@ -50,20 +50,18 @@ Once published, install directly from the AstrBot admin panel: **Plugin Market �
 
 ### 方式二：手动 zip 安装 / Method 2: Manual zip install
 
-> **压缩包命名规范 / Zip naming rule**：成品压缩包须命名为 **V主版本号.次版本号.修订版本号.zip**（如 **V1.0.2.zip**），并与 **metadata.yaml** 中的 **version** 字段严格一致。其他命名（如 **插件_v1.0.zip**）不推荐。
->
-> The final package must be named **V&lt;major&gt;.&lt;minor&gt;.&lt;patch&gt;.zip** (e.g. **V1.0.2.zip**), strictly matching the **version** field in **metadata.yaml**. Other names (like **插件_v1.0.zip**) are NOT recommended.
->
+适用于插件市场尚不可用、或你更习惯手动安装的情况。下载本插件仓库的源码压缩包后：
 
-1. 打包为 **V1.0.2.zip**，将 **main.py**、**metadata.yaml**、**_conf_schema.json**、**requirements.txt** 放在 zip 根目录（不要放进子文件夹）。
-   Create the zip: **V1.0.2.zip**, with **main.py**, **metadata.yaml**, **_conf_schema.json**, **requirements.txt** at the zip root (not inside a sub-folder).
-2. 在 AstrBot 管理面板「**插件管理 → 安装**」上传 zip。
-   In the AstrBot admin panel: **Plugin Management → Install → upload the zip**.
-3. 安装完成后，重启插件即可生效。
-   Restart the plugin for it to take effect.
+If you prefer a manual install, or the plugin market is not available for you, download the source zip from this repo and:
 
-> **metadata.yaml** 必须使用官方字段（**name**、**display_name**、**version**、**author**、**repo**、**astrbot_version**、**tags** 等）。
-> **metadata.yaml** must use the official fields (**name**, **display_name**, **version**, **author**, **repo**, **astrbot_version**, **tags**, ...).
+1. 在 AstrBot 管理面板打开「**插件管理 → 安装**」，上传该 zip 文件。
+   In the AstrBot admin panel, open **Plugin Management → Install** and upload the zip.
+2. 安装完成后重启插件（或重载插件列表）即可生效。
+   Restart the plugin (or reload the plugin list) for it to take effect.
+
+> 无需解压、无需手动改文件名，直接上传即可。
+>
+> No need to unzip or rename anything — just upload it as-is.
 
 ### 方式三：git 仓库克隆安装（获取最新更新）/ Method 3: Clone from git repo (for the latest updates)
 
@@ -134,7 +132,7 @@ git clone https://github.com/yosuki-kata/astrbot-plugin-gmod-server-query.git
 | **render_keywords** | ["服务器列表","列表"] | 触发列表渲染图的监听关键词 / Keywords that trigger list render image |
 | **render_quality** | 92 | 渲染图 JPEG 画质（1-100，建议 80-95）/ JPEG quality (1-100, suggested 80-95) |
 | **render_width** | 1080 | 渲染图输出宽度（px），默认 1080p，可填 1440 / 1920，范围 480-2560 / Render output width in px, default 1080p, 480-2560 |
-| **render_background** | [] | 渲染图背景图，支持 jpg/jpeg/png/webp，留空则用插件目录 assets/bg.jpg，再没有则使用内置渐变 / Background image for rendering |
+| **render_background** | [] | 渲染图背景图，支持 jpg/jpeg/png/webp，**上传多张时每次随机选一张**；留空或图片失效时自动回退插件 assets 目录的默认背景，仍无则使用内置渐变 / Background image(s) for rendering; multiple images are picked at random per render, falling back to the bundled assets background and finally a built-in gradient |
 | **render_local_t2i** | "" | 本地 T2I 服务地址，如 http://127.0.0.1:8000，留空则不启用 / Local T2I service endpoint, leave empty to disable |
 | **prefer_local_t2i** | false | 是否优先走本地 T2I（需先填 render_local_t2i）/ Prefer local T2I (requires render_local_t2i) |
 
@@ -176,10 +174,12 @@ If **prefer_local_t2i** is enabled, the order becomes Local T2I → Remote T2I �
   **html_render** has a **TypeError fallback** for older versions without the **options** parameter.
 - 渲染链为「外部 T2I → 本地 T2I → 文字」三级兜底，两路渲染均失败时输出**完整文字总览**（服务器信息 + 在线玩家名单），不会退化为仅有别名清单。
   The render chain has three levels of fallback; when both render paths fail, a **full text summary** (server info + player list) is output instead of a bare alias list.
+- 背景图按 **配置项 → assets 目录 → 内置渐变** 三级回退；前两级在多张候选时都随机抽取。配置项里的图片全部定位失败时仍会回退到 assets，避免误删上传文件后无图可用。
+  The background falls back through **config → assets → built-in gradient**; the first two levels pick randomly when several candidates exist. If every configured image is missing, it still falls back to assets rather than the gradient.
 - 背景图使用**独立背景层**铺满整张长图，而非附着在 html/body 上。若直接给 html/body 用 fixed 附着，在 full_page 长截图里会以视口为基准，导致长图中段出现背景断档留白。
-  The background uses a **dedicated layer** filling the whole long image instead of being attached to html/body; a fixed attachment on html/body is viewport-based and leaves blank gaps in full_page screenshots.
-- 背景图统一转 **base64 内联**，避免云端 T2I 拉取外链超时。
-  Background images are inlined as **base64** to avoid cloud T2I timeouts when fetching external links.
+The background uses a **dedicated layer** filling the whole long image instead of being attached to html/body; a fixed attachment on html/body is viewport-based and leaves blank gaps in full_page screenshots.
+- 背景图统一转 **base64 内联**，避免云端 T2I 拉取外链超时；读取结果按「路径 + 修改时间 + 大小」缓存，同名图片被替换后会自动失效重读。
+  Background images are inlined as **base64** to avoid outbound image fetches timing out on cloud T2I; results are cached by path + mtime + size, and the cache invalidates automatically when the file is replaced.
 - AstrBot v4.13.0+ 的 file 类型配置，上传文件实际落盘位置随版本不同（**data/plugin_data**、**data/plugins** 等），插件以 data 根为范围做多候选扫描，找不到时回退到插件目录的 **assets/bg.jpg**。
   For file-type configs in AstrBot v4.13.0+, the upload location varies by version; the plugin scans multiple candidate directories and falls back to **assets/bg.jpg**.
 - 所有网络 I/O 套用 **asyncio.wait_for** 超时；a2s 字段一律通过 **getattr** 兜底。
@@ -197,11 +197,11 @@ If **prefer_local_t2i** is enabled, the order becomes Local T2I → Remote T2I �
 
 | 文件 / File | 说明 / Description |
 |------|------|
-| **main.py** | 插件主体（GModServerQuery 类）/ Plugin main body (GModServerQuery class) |
-| **metadata.yaml** | 插件元数据（发布信息）/ Plugin metadata for publishing |
-| **_conf_schema.json** | 可视化配置项定义（13 项）/ Visual config definitions (13 items) |
-| **requirements.txt** | 依赖（python-a2s）/ Dependencies (python-a2s) |
-| **.gitignore** | Git 忽略规则 / Git ignore rules |
+| **main.py** | 插件主体，全部逻辑集中在此文件 / Plugin entry point, all logic lives here |
+| **metadata.yaml** | 插件元数据（名称、作者、版本等发布信息）/ Plugin metadata for publishing |
+| **_conf_schema.json** | 可视化配置项定义 / Visual config definitions |
+| **requirements.txt** | 运行依赖（python-a2s）/ Runtime dependencies (python-a2s) |
+| **assets/** | 内置默认背景图，可放入多张（bg.jpg / 1.png 等）随机轮换 / Bundled default backgrounds; drop in several images to rotate |
 
 ---
 

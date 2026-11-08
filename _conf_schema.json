@@ -37,7 +37,10 @@
   "render_keywords": {
     "description": "触发服务器列表渲染图的监听关键词（群内直接发送这些词即生成列表图片）",
     "type": "list",
-    "default": ["服务器列表", "列表"]
+    "default": [
+      "服务器列表",
+      "列表"
+    ]
   },
   "render_quality": {
     "description": "列表渲染图 JPEG 画质（1~100），默认 92。画质越高文件越大",
@@ -46,11 +49,16 @@
     "hint": "建议 80 ~ 95"
   },
   "render_background": {
-    "description": "渲染图背景图片（上传本地图片，留空则使用插件 assets 目录下的 bg 图片或默认渐变）",
+    "description": "渲染图背景图片（可上传多张，每次随机选取一张；留空则使用插件 assets 目录下的 bg 图片或默认渐变）",
     "type": "file",
     "default": [],
-    "file_types": ["jpg", "jpeg", "png", "webp"],
-    "hint": "上传后会自动转为 base64 内联，不依赖外链。建议使用 16:9 或竖版大图"
+    "file_types": [
+      "jpg",
+      "jpeg",
+      "png",
+      "webp"
+    ],
+    "hint": "支持一次上传多张，每次渲染随机抽一张，避免视觉单调。上传后会自动转为 base64 内联，不依赖外链。建议使用 16:9 或竖版大图"
   },
   "render_local_t2i": {
     "description": "本地 T2I 服务地址（自建的 AstrBot T2I 服务，填如 http://127.0.0.1:8000，留空则不使用本地兜底）",
