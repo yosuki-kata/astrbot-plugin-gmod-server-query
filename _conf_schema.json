@@ -9,6 +9,25 @@
     "type": "int",
     "default": 5
   },
+  "query_custom_api": {
+    "description": "自定义查询 API 地址（可选，留空则不启用）",
+    "type": "string",
+    "default": "",
+    "hint": "插件会以 GET {您的地址}?ip={IP}&port={端口} 的形式请求，并自动兼容常见字段名。配置后请自行确认该服务可信：插件无法审查其行为，您的服务器 IP 与端口会被发送到该地址"
+  },
+  "query_custom_api_key": {
+    "description": "自定义查询 API 密钥（可选，留空则不发送）",
+    "type": "string",
+    "default": "",
+    "obscure": true,
+    "hint": "填写后会以请求头 X-API-Key 发送给上面的接口"
+  },
+  "query_custom_api_first": {
+    "description": "优先使用自定义查询 API（开启后先走自定义接口，失败再直连查询；关闭则直连优先、自定义接口兜底）",
+    "type": "bool",
+    "default": false,
+    "hint": "需先填写「自定义查询 API 地址」才生效"
+  },
   "enable_listen": {
     "description": "是否启用消息监听：在群内直接发送已保存的服务器别名时，自动返回该服务器信息",
     "type": "bool",
@@ -60,22 +79,34 @@
     ],
     "hint": "支持一次上传多张，每次渲染随机抽一张，避免视觉单调。上传后会自动转为 base64 内联，不依赖外链。建议使用 16:9 或竖版大图"
   },
-  "render_local_t2i": {
-    "description": "本地 T2I 服务地址（自建的 AstrBot T2I 服务，填如 http://127.0.0.1:8000，留空则不使用本地兜底）",
+  "render_custom_t2i": {
+    "description": "自定义 T2I 服务地址（填写后作为图片渲染的备用/优先通道，留空则只使用 AstrBot 内置的 T2I）",
     "type": "string",
     "default": "",
-    "hint": "外部 T2I 全部失败时会自动尝试此地址。也可填能用的第三方 text2img 端点"
+    "hint": "填如 http://127.0.0.1:8000，也可填任何兼容 text2img 协议的三方端点。请确保该服务可信：渲染时服务器信息会被发送到该地址，插件无法审查自配端点的行为"
   },
-  "prefer_local_t2i": {
-    "description": "优先使用本地 T2I 渲染（开启后先试本地地址，失败再试外部；关闭则外部优先、本地兜底）",
+  "prefer_custom_t2i": {
+    "description": "优先使用自定义 T2I 渲染（开启后先试自定义地址，失败再试内置 T2I；关闭则内置优先、自定义地址兜底）",
     "type": "bool",
     "default": false,
-    "hint": "需先在上一项填写本地 T2I 地址才生效"
+    "hint": "需先在上一项填写自定义 T2I 地址才生效。请确认所填服务可信"
   },
   "render_width": {
     "description": "渲染图宽度（像素），用于控制出图分辨率",
     "type": "int",
     "default": 1080,
     "hint": "1080 为标准 1080p 宽度；想更高清可填 1440 或 1920"
+  },
+  "render_local_t2i": {
+    "description": "【已废弃】旧版「本地 T2I 服务地址」，请改用「自定义 T2I 服务地址」",
+    "type": "string",
+    "default": "",
+    "hint": "仅为兼容旧配置保留，新配置请填写 render_custom_t2i。留空即可，插件会自动读取旧值"
+  },
+  "prefer_local_t2i": {
+    "description": "【已废弃】旧版「优先使用本地 T2I」，请改用「优先使用自定义 T2I」",
+    "type": "bool",
+    "default": false,
+    "hint": "仅为兼容旧配置保留，新配置请使用 prefer_custom_t2i。旧值会在新项未设置时自动生效"
   }
 }

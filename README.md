@@ -33,8 +33,12 @@ Built from scratch by rewriting the old v3.3.2 — returning to **1.0** as a fre
   **Detail image**: Querying a single server renders a detail card with the player list and server properties.
 - **背景图**：支持上传多张自定义背景图，每次渲染随机选用一张；未配置或图片失效时自动回退插件内置的默认背景图，铺满整张长图不失真。
   **Background**: Upload multiple custom backgrounds and one is picked at random per render; falls back to the bundled default background when unset or missing, filling the entire long image.
-- **三级渲染兜底**：外部 T2I → 本地 T2I → 文字输出，任一渲染服务故障都能给出完整文字总览。
-  **Three-level render fallback**: Remote T2I → Local T2I → Plain text, always delivering a complete text summary when renderers fail.
+- **三级渲染兜底**：内置 T2I → 自定义 T2I → 文字输出，任一渲染服务故障都能给出完整文字总览。
+  **Three-level render fallback**: Built-in T2I → Custom T2I → Plain text, always delivering a complete text summary when renderers fail.
+- **自定义查询 API**：可接入第三方查询接口作为备用或优先数据源，自动兼容常见字段名；配置后无需改动其他逻辑。
+  **Custom query API**: Plug in a third-party query endpoint as a fallback or preferred data source; common field names are auto-detected.
+- **LLM 函数工具**：接入 AstrBot 的 LLM 工具调用，模型可直接查询服务器并出图，再按人格自行补一句短评。
+  **LLM function tools**: Integrates with AstrBot's LLM tool calling — the model can query a server, send the image, then add its own short remark.
 - **可视化配置**：通过 AstrBot 管理面板可视化配置全部选项。
   **Visual config**: All options are configurable from the AstrBot admin panel.
 
@@ -124,6 +128,9 @@ git clone https://github.com/yosuki-kata/astrbot-plugin-gmod-server-query.git
 |----------|--------|------|
 | **default_port** | 27015 | 默认查询端口 / Default query port |
 | **query_timeout** | 5 | 查询超时时间（秒）/ Query timeout in seconds |
+| **query_custom_api** | "" | 自定义查询 API 地址，留空不启用。请求形式为 **GET {地址}?ip={IP}&port={端口}** / Custom query API endpoint; disabled when empty. Requested as **GET {url}?ip={IP}&port={port}** |
+| **query_custom_api_key** | "" | 自定义查询 API 密钥，填写后以请求头 **X-API-Key** 发送 / API key sent as the **X-API-Key** header when set |
+| **query_custom_api_first** | false | 是否优先使用自定义查询 API（需先填地址）/ Prefer the custom query API (requires an endpoint) |
 | **enable_listen** | true | 是否启用消息监听（发别名自动查询）/ Enable message listening (alias auto-query) |
 | **listen_only_group** | true | 是否仅在群聊中监听 / Listen only in group chats |
 | **listen_exact_match** | true | 仅精确匹配别名，或包含匹配别名 / Exact match or contains match for aliases |
@@ -133,8 +140,16 @@ git clone https://github.com/yosuki-kata/astrbot-plugin-gmod-server-query.git
 | **render_quality** | 92 | 渲染图 JPEG 画质（1-100，建议 80-95）/ JPEG quality (1-100, suggested 80-95) |
 | **render_width** | 1080 | 渲染图输出宽度（px），默认 1080p，可填 1440 / 1920，范围 480-2560 / Render output width in px, default 1080p, 480-2560 |
 | **render_background** | [] | 渲染图背景图，支持 jpg/jpeg/png/webp，**上传多张时每次随机选一张**；留空或图片失效时自动回退插件 assets 目录的默认背景，仍无则使用内置渐变 / Background image(s) for rendering; multiple images are picked at random per render, falling back to the bundled assets background and finally a built-in gradient |
-| **render_local_t2i** | "" | 本地 T2I 服务地址，如 http://127.0.0.1:8000，留空则不启用 / Local T2I service endpoint, leave empty to disable |
-| **prefer_local_t2i** | false | 是否优先走本地 T2I（需先填 render_local_t2i）/ Prefer local T2I (requires render_local_t2i) |
+| **render_custom_t2i** | "" | 自定义 T2I 服务地址，如 http://127.0.0.1:8000，留空则不启用 / Custom T2I service endpoint, leave empty to disable |
+| **prefer_custom_t2i** | false | 是否优先走自定义 T2I（需先填 render_custom_t2i）/ Prefer custom T2I (requires render_custom_t2i) |
+| **render_local_t2i** | "" | **【已废弃】** 旧版本地 T2I 地址，请改用 **render_custom_t2i**；留空即可，旧值会被自动读取 / **Deprecated**, use **render_custom_t2i** instead |
+| **prefer_local_t2i** | false | **【已废弃】** 旧版优先开关，请改用 **prefer_custom_t2i**；旧值在新项未设置时仍生效 / **Deprecated**, use **prefer_custom_t2i** instead |
+
+> **从 1.1.x 升级 / Upgrading from 1.1.x**
+>
+> 旧的 **render_local_t2i** / **prefer_local_t2i** 仍可正常工作：当新配置项为空或未设置时，插件会自动读取旧值并输出一条迁移提示日志。你可以在方便时把旧值搬到新字段，然后清空旧字段。
+>
+> The old **render_local_t2i** / **prefer_local_t2i** keys keep working: when the new keys are empty or unset, the plugin reads the legacy values and logs a one-time migration hint. Move the value to the new fields and clear the old ones whenever convenient.
 
 ### 渲染优先级 / Render Priority
 
@@ -144,19 +159,35 @@ The plugin tries the following strategies in order and returns on the first succ
 
 | 顺序 | 策略 / Strategy | 说明 / Description |
 |------|------|------|
-| 1 | 外部 T2I / Remote T2I | AstrBot 全局配置的 T2I 服务 / The global T2I service configured in AstrBot |
-| 2 | 本地 T2I / Local T2I | 你在 **render_local_t2i** 填写的自建服务 / Your own endpoint in **render_local_t2i** |
+| 1 | 内置 T2I / Built-in T2I | AstrBot 全局配置的 T2I 服务 / The global T2I service configured in AstrBot |
+| 2 | 自定义 T2I / Custom T2I | 你在 **render_custom_t2i** 填写的自建或三方服务 / Your own or third-party endpoint in **render_custom_t2i** |
 | 3 | 文字输出 / Plain text | 前两者都失败时，输出完整文字总览（含在线玩家名单）/ Falls back to full text summary including player list |
 
-勾选 **prefer_local_t2i** 后，顺序变为「本地 T2I → 外部 T2I → 文字输出」。
+勾选 **prefer_custom_t2i** 后，顺序变为「自定义 T2I → 内置 T2I → 文字输出」。
 
-If **prefer_local_t2i** is enabled, the order becomes Local T2I → Remote T2I → Plain text.
+If **prefer_custom_t2i** is enabled, the order becomes Custom T2I → Built-in T2I → Plain text.
 
-> **关于本地 T2I / About Local T2I**
+### 查询数据源 / Query Data Source
+
+服务器信息默认通过 A2S 协议直连查询。配置 **query_custom_api** 后，可额外启用第三方接口：
+
+Server data is queried directly over the A2S protocol by default. Once **query_custom_api** is set, a third-party endpoint can be used as well:
+
+| 配置 / Config | 顺序 / Order |
+|---|---|
+| 未填 query_custom_api / Empty | A2S 直连 → 失败即报错 / A2S only |
+| 填了地址，**query_custom_api_first** = false | A2S 直连 → 自定义 API → 报错 / A2S → Custom API |
+| 填了地址，**query_custom_api_first** = true | 自定义 API → A2S 直连 → 报错 / Custom API → A2S |
+
+自定义接口返回的字段名会自动多路匹配，包括 **server_name / name / hostname**、**map / map_name**、**players / player_count / numplayers**、**max_players / maxplayers / max** 等，并支持 **data** / **result** 包裹一层的结构。
+
+Field names are auto-detected across common variants such as **server_name / name / hostname**, **map / map_name**, **players / player_count / numplayers**, **max_players / maxplayers / max**, and payloads wrapped in **data** or **result** are also supported.
+
+> **关于自定义 T2I / About Custom T2I**
 >
-> AstrBot 内置的本地渲染策略不支持自定义 HTML 模板（调用会直接抛 NotImplementedError），因此本插件的「本地 T2I」需要你自建一个兼容端点。该端点需满足与官方一致的协议：
+> AstrBot 内置的本地渲染策略不支持自定义 HTML 模板（调用会直接抛 NotImplementedError），因此本插件的「自定义 T2I」需要你自建或准备一个兼容端点。该端点需满足与官方一致的协议：
 >
-> AstrBot's built-in local strategy does not support custom HTML templates, so the local T2I here requires a self-hosted endpoint with the same protocol as the official one:
+> AstrBot's built-in local strategy does not support custom HTML templates, so the custom T2I here requires a self-hosted or third-party endpoint with the same protocol as the official one:
 >
 > 请求 / Request：**POST {endpoint}/generate**
 >
@@ -172,7 +203,7 @@ If **prefer_local_t2i** is enabled, the order becomes Local T2I → Remote T2I �
   The list render image does **NOT** pass a numeric **scale**; it uses **quality + full_page + width** for sharpness (avoids cloud T2I HTTP 422).
 - **html_render** 对旧版无 **options** 参数的版本，做了 **TypeError 兼容回退**。
   **html_render** has a **TypeError fallback** for older versions without the **options** parameter.
-- 渲染链为「外部 T2I → 本地 T2I → 文字」三级兜底，两路渲染均失败时输出**完整文字总览**（服务器信息 + 在线玩家名单），不会退化为仅有别名清单。
+- 渲染链为「内置 T2I → 自定义 T2I → 文字」三级兜底，两路渲染均失败时输出**完整文字总览**（服务器信息 + 在线玩家名单），不会退化为仅有别名清单。
   The render chain has three levels of fallback; when both render paths fail, a **full text summary** (server info + player list) is output instead of a bare alias list.
 - 背景图按 **配置项 → assets 目录 → 内置渐变** 三级回退；前两级在多张候选时都随机抽取。配置项里的图片全部定位失败时仍会回退到 assets，避免误删上传文件后无图可用。
   The background falls back through **config → assets → built-in gradient**; the first two levels pick randomly when several candidates exist. If every configured image is missing, it still falls back to assets rather than the gradient.
@@ -190,6 +221,46 @@ The background uses a **dedicated layer** filling the whole long image instead o
   The data file **servers.json** is stored under AstrBot's **data/plugin_data/gmod_a2s_server_query**, following the persistence convention for backup, migration and auditing. A legacy **servers.json** left in the plugin directory is migrated automatically on startup.
 - 调用自定义 T2I 端点时 **trust_env=False**，不读取环境变量中的代理配置，避免请求被意外转发到未知代理。
   Calls to the custom T2I endpoint use **trust_env=False**, ignoring proxy settings from environment variables so requests are not silently rerouted.
+- 自定义查询 API 同样使用 **trust_env=False**，请求失败时按配置顺序回退到另一条链路，不会因为接口不可用而让查询整体失败。
+  Custom query API calls also use **trust_env=False**; a failure falls back to the other data source, so an unavailable endpoint never breaks the query entirely.
+- LLM 工具只读：仅注册 **gmod_list_servers** 与 **gmod_query_server**，不含添加/删除，避免模型误改服务器数据。
+  LLM tools are read-only: only **gmod_list_servers** and **gmod_query_server** are registered, no add/remove, so the model cannot modify saved data.
+- LLM 工具把渲染图通过 **send_message** 直接发给用户，返回值只带一行紧凑摘要给模型，避免用户收到图后又看到一遍重复的数据文本。
+  The LLM tool sends the rendered image to the user via **send_message** and returns only a compact one-line summary to the model, so the user doesn't get the same data twice.
+
+---
+
+## ⚠️ 免责声明 / Disclaimer
+
+本插件提供两个可选的「外部端点」配置：**自定义 T2I 服务**与**自定义查询 API**。两者的地址全部由使用者自行填写，插件本体不对其行为负责。
+
+This plugin offers two optional external endpoints: a **custom T2I service** and a **custom query API**. Both addresses are supplied by the user; the plugin takes no responsibility for their behavior.
+
+### 一、自定义 T2I 服务 / Custom T2I Service
+
+1. 该端点地址完全由你提供，作者不提供、不托管、也不推荐任何具体的第三方端点。
+   The endpoint is entirely your own choice; the author does not provide, host, or endorse any specific third-party endpoint.
+2. 渲染时，插件会把服务器信息（名称、地图、在线人数、玩家名单等）与渲染模板一并 **POST** 到你填写的地址。
+   During rendering, the plugin **POSTs** server data (name, map, player count, player list, etc.) together with the render template to the address you configured.
+3. 请确保该服务来源可信。若地址被替换为恶意或不可控的服务，你的服务器与玩家信息可能会被第三方获取。
+   Please make sure the service is trustworthy. A malicious or uncontrolled endpoint could collect your server and player data.
+4. 插件无法审查、也无法限制自配端点的实际行为，一切后果由配置者自行承担。
+   The plugin cannot audit or restrict what a self-configured endpoint actually does; the configurator bears all consequences.
+
+### 二、自定义查询 API / Custom Query API
+
+1. 该接口地址与密钥完全由你提供，作者不对其可用性、准确性或安全性作任何保证。
+   The endpoint and key are entirely your own; the author makes no guarantee about availability, accuracy, or security.
+2. 查询时，插件会以 **GET** 方式把你所查询服务器的 **IP 与端口**发送到你填写的地址。
+   When querying, the plugin **GETs** your configured address and sends the server's **IP and port**.
+3. 请确保该服务来源可信。第三方接口可能会记录、转发或滥用你提交的服务器信息。
+   Please make sure the service is trustworthy; a third-party endpoint may log, forward, or misuse the server information you submit.
+4. 插件无法审查、也无法限制自配接口的实际行为，一切后果由配置者自行承担。
+   The plugin cannot audit or restrict what a self-configured endpoint actually does; the configurator bears all consequences.
+
+> **一句话总结 / In short**：配置什么地址，数据就发到哪里。请自行判断并承担风险。
+>
+> **What you configure is where your data goes.** Judge accordingly and accept the risk.
 
 ---
 

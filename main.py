@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""GMod 服务器查询插件（重制版 v1.1.0）
+"""GMod 服务器查询插件（重制版 v1.2.0）
 
 基于原 v3.3.2 的全部功能彻底重写，采用更清晰的结构与命名。
-功能涵盖：别名管理、IP/别名查询、超时控制、消息监听、服务器列表渲染图、可视化配置。
+功能涵盖：别名管理、IP/别名查询、超时控制、消息监听、服务器列表渲染图、可视化配置、
+自定义查询 API、LLM 函数工具。
 
 设计要点（参考《插件开发踩坑参考.md》）：
  - html_render 的 options 不用数字 scale，避免云端 T2I 返回 HTTP 422
@@ -35,8 +36,11 @@ class Config:
     RENDER_KEYWORDS = ["服务器列表", "列表"]  # render_keywords
     RENDER_QUALITY = 92         # render_quality
     RENDER_WIDTH = 1080         # render_width（1080p）
-    LOCAL_T2I = ""              # render_local_t2i
-    PREFER_LOCAL_T2I = False    # prefer_local_t2i
+    CUSTOM_T2I = ""             # render_custom_t2i（v1.2.0 起）
+    PREFER_CUSTOM_T2I = False   # prefer_custom_t2i（v1.2.0 起）
+    # 已废弃：仅用于兼容旧版配置，新装用户无需关心
+    LOCAL_T2I = ""              # render_local_t2i【已废弃】
+    PREFER_LOCAL_T2I = False    # prefer_local_t2i【已废弃】
 
 
 # ==================== 渲染图 HTML 模板（Jinja2） ====================
@@ -292,6 +296,7 @@ class GModServerQuery(Star):
         super().__init__(context)
         self.config = config
         self.servers = {}  # 别名 -> {"ip": str, "port": int}
+        self._legacy_t2i_warned = False  # 旧 T2I 配置迁移提示只打一次
         self.data_file = self._resolve_data_file()
         self._migrate_legacy_data()
         self._load()
@@ -352,16 +357,56 @@ class GModServerQuery(Star):
             return Config.RENDER_WIDTH
         return max(480, min(2560, w))
 
-    def _local_t2i(self) -> str:
-        """本地 T2I 服务地址，未配置则返回空串。"""
-        v = self._cfg("render_local_t2i", "")
+    def _custom_t2i(self) -> str:
+        """自定义 T2I 服务地址，未配置则返回空串。
+
+        v1.2.0 起配置键改名为 render_custom_t2i（原名 render_local_t2i 会让人
+        误以为只能填 127.0.0.1）。为不丢失老用户配置，新键为空时回退旧键。
+        """
+        v = self._cfg("render_custom_t2i", Config.CUSTOM_T2I)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+        legacy = self._cfg("render_local_t2i", "")
+        legacy = legacy.strip() if isinstance(legacy, str) else ""
+        if legacy:
+            if not self._legacy_t2i_warned:
+                self._legacy_t2i_warned = True
+                logger.info(
+                    "[gmod] 检测到旧配置项 render_local_t2i，已兼容读取。"
+                    "建议在面板中改用「自定义 T2I 服务地址」（render_custom_t2i）"
+                )
+            return legacy
+        return ""
+
+    def _prefer_custom_t2i(self) -> bool:
+        """是否优先走自定义 T2I（需已配置地址）。
+
+        新键 prefer_custom_t2i 未显式设置时回退旧键 prefer_local_t2i。
+        """
+        if not self._custom_t2i():
+            return False
+        # 新键缺省（值为 None）说明用户没动过，此时才回退旧键
+        val = self._cfg("prefer_custom_t2i", None)
+        if val is None:
+            val = self._cfg("prefer_local_t2i", Config.PREFER_LOCAL_T2I)
+        return bool(val)
+
+    # ==================== 自定义查询 API ====================
+    def _custom_query_api(self) -> str:
+        """自定义查询 API 地址，未配置则返回空串（不启用）。"""
+        v = self._cfg("query_custom_api", "")
         return v.strip() if isinstance(v, str) else ""
 
-    def _prefer_local_t2i(self) -> bool:
-        """是否优先走本地 T2I（需已配置地址）。"""
-        if not self._local_t2i():
+    def _custom_query_api_key(self) -> str:
+        """自定义查询 API 的密钥，会以 X-API-Key 头传递。未配置返回空串。"""
+        v = self._cfg("query_custom_api_key", "")
+        return v.strip() if isinstance(v, str) else ""
+
+    def _custom_query_first(self) -> bool:
+        """是否优先使用自定义查询 API（需已配置地址）。"""
+        if not self._custom_query_api():
             return False
-        return bool(self._cfg("prefer_local_t2i", False))
+        return bool(self._cfg("query_custom_api_first", False))
 
     # ==================== 数据持久化 ====================
     def _resolve_data_file(self) -> str:
@@ -498,12 +543,226 @@ class GModServerQuery(Star):
         return "v-red"
 
     async def _query_one(self, alias, ip: str, port: int) -> dict:
+        """查询单台服务器信息，按配置决定数据来源。
+
+        数据来源优先级（query_custom_api_first）：
+            True : 自定义查询 API → A2S 直连 → 返回失败结果
+            False: A2S 直连 → 自定义查询 API → 返回失败结果
+        未配置 query_custom_api 时完全跳过自定义环节，行为与旧版一致。
+        """
+        custom_first = self._custom_query_first()
+        has_custom = bool(self._custom_query_api())
+
+        if has_custom and custom_first:
+            info = await self._query_via_custom_api(alias, ip, port)
+            if info.get("online"):
+                return info
+            fallback = await self._query_via_a2s(alias, ip, port)
+            if fallback.get("online"):
+                fallback["source"] = "a2s"
+                return fallback
+            # 两条链路都失败：优先返回自定义 API 的错误，信息更贴近用户配置
+            return info
+
+        info = await self._query_via_a2s(alias, ip, port)
+        info.setdefault("source", "a2s")
+        if info.get("online") or not has_custom:
+            return info
+        fallback = await self._query_via_custom_api(alias, ip, port)
+        return fallback if fallback.get("online") else info
+
+    # ---------- 自定义查询 API ----------
+    # 常见第三方查询接口字段名五花八门，这里做多路兼容：
+    # 顶层或嵌套一层（data / result）里依次尝试各候选键名。
+    _FIELD_ALIASES = {
+        "name": ("server_name", "name", "hostname", "servername"),
+        "map": ("map", "map_name", "mapname", "current_map"),
+        "players": ("players", "player_count", "numplayers", "clients"),
+        "max_players": ("max_players", "maxplayers", "max", "max_clients"),
+        "bots": ("bots", "bot_count", "numbots"),
+        "password": ("password", "password_protected", "protected"),
+        "game": ("game", "game_name", "gamename", "mod"),
+        "version": ("version", "game_version"),
+        "vac": ("vac", "vac_enabled", "secure"),
+        "ping": ("ping", "latency", "delay"),
+    }
+
+    @staticmethod
+    def _pick_field(src: dict, keys):
+        """按候选顺序从字典里取值，取到即返回；全都没有返回 None。"""
+        for k in keys:
+            if k in src and src[k] is not None:
+                return src[k]
+        return None
+
+    @staticmethod
+    def _to_int(value, default=0) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _to_bool(value) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value != 0
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "yes", "y", "on")
+        return False
+
+    async def _query_via_custom_api(self, alias, ip: str, port: int) -> dict:
+        """通过用户自配的查询 API 获取服务器信息。
+
+        请求：GET {url}?ip={ip}&port={port}
+        鉴权：配置了密钥时附加请求头 X-API-Key
+        返回结构与 _query_via_a2s 完全一致，保证渲染层零改动。
+        """
+        import time as _time
+        import aiohttp
+
+        base = {"alias": alias, "ip": ip, "port": port, "source": "custom_api"}
+        endpoint = self._custom_query_api()
+        if not endpoint:
+            base.update({"online": False, "err": "未配置自定义查询 API", "player_list": [], "player_total": 0})
+            return base
+
+        started = _time.monotonic()
+        headers = {"Accept": "application/json"}
+        key = self._custom_query_api_key()
+        if key:
+            headers["X-API-Key"] = key
+
+        timeout = aiohttp.ClientTimeout(total=max(3, self._timeout()))
+        try:
+            async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
+                async with session.get(
+                    endpoint, params={"ip": ip, "port": port}, headers=headers
+                ) as resp:
+                    if resp.status != 200:
+                        raise RuntimeError(f"HTTP {resp.status}")
+                    raw = await resp.json(content_type=None)
+        except asyncio.TimeoutError:
+            base.update({"online": False, "err": "自定义 API 超时", "player_list": [], "player_total": 0})
+            return base
+        except Exception as e:
+            logger.warning(f"[gmod] 自定义查询 API 失败 ({endpoint}): {e}")
+            base.update({
+                "online": False,
+                "err": f"自定义API: {str(e)[:40]}",
+                "player_list": [], "player_total": 0,
+            })
+            return base
+
+        # 兼容 {code, data:{...}} / {result:{...}} / 直接返回对象 三种形态
+        payload = raw
+        if isinstance(payload, dict):
+            for wrapper in ("data", "result", "server", "info"):
+                inner = payload.get(wrapper)
+                if isinstance(inner, dict):
+                    payload = inner
+                    break
+        if not isinstance(payload, dict):
+            base.update({
+                "online": False,
+                "err": "自定义API返回格式无法识别",
+                "player_list": [], "player_total": 0,
+            })
+            return base
+
+        # 部分接口带 status/online 字段，明确说离线时按离线处理
+        online_flag = self._pick_field(payload, ("online", "status", "is_online"))
+        if isinstance(online_flag, str) and online_flag.lower() in ("offline", "false", "0"):
+            base.update({"online": False, "err": "服务器离线（自定义API）", "player_list": [], "player_total": 0})
+            return base
+
+        name = self._pick_field(payload, self._FIELD_ALIASES["name"]) or ""
+        map_name = self._pick_field(payload, self._FIELD_ALIASES["map"]) or ""
+
+        # 玩家列表：兼容 [{"name":...}] / ["玩家名"] 数组形式。
+        # 注意必须在解析人数之前处理：部分接口用 players 数组本身表达在线人数，
+        # 此时 _to_int(数组) 会得到 0，需要回退为数组长度。
+        raw_players = self._pick_field(
+            payload, ("player_list", "players_list", "playerlist", "clients")
+        )
+        if raw_players is None and isinstance(payload.get("players"), list):
+            raw_players = payload["players"]
+        player_list = []
+        if isinstance(raw_players, list):
+            for i, item in enumerate(raw_players, 1):
+                if isinstance(item, dict):
+                    pname = (
+                        self._pick_field(item, ("name", "player_name", "nickname", "player"))
+                        or "未知玩家"
+                    )
+                    duration = self._fmt_duration(
+                        self._pick_field(item, ("duration", "time", "play_time", "duration_seconds"))
+                    )
+                else:
+                    pname = str(item).strip() or "未知玩家"
+                    duration = "--:--"
+                player_list.append({"idx": i, "name": pname, "duration": duration})
+
+        raw_count = self._pick_field(payload, self._FIELD_ALIASES["players"])
+        if isinstance(raw_count, list):
+            players = len(raw_count)
+        else:
+            players = self._to_int(raw_count)
+            if players == 0 and player_list:
+                players = len(player_list)
+        max_players = self._to_int(self._pick_field(payload, self._FIELD_ALIASES["max_players"]))
+        bots = self._to_int(self._pick_field(payload, self._FIELD_ALIASES["bots"]))
+        game = self._pick_field(payload, self._FIELD_ALIASES["game"]) or ""
+        version = self._pick_field(payload, self._FIELD_ALIASES["version"]) or ""
+        vac = self._pick_field(payload, self._FIELD_ALIASES["vac"])
+        ping = self._pick_field(payload, self._FIELD_ALIASES["ping"])
+
+        if isinstance(ping, (int, float)):
+            ping = int(ping)
+        else:
+            ping = int((_time.monotonic() - started) * 1000)
+
+        if player_list:
+            shown = [p["name"] for p in player_list[:8]]
+            if len(player_list) > 8:
+                players_on = "、".join(shown) + f" 等{len(player_list)}人"
+            else:
+                players_on = "、".join(shown)
+        else:
+            players_on = ""
+
+        base.update({
+            "online": True,
+            "name": str(name),
+            "map": str(map_name),
+            "game": str(game),
+            "folder": "",
+            "version": str(version),
+            "players": players,
+            "max_players": max_players,
+            "bots": bots,
+            "server_type": "",
+            "platform": "",
+            "vac": self._to_bool(vac) if vac is not None else None,
+            "password": self._to_bool(self._pick_field(payload, self._FIELD_ALIASES["password"])),
+            "app_id": None,
+            "ping": ping,
+            "players_on": players_on,
+            "player_list": player_list,
+            "player_total": len(player_list),
+            "query_cost": f"{(_time.monotonic() - started):.2f}",
+        })
+        return base
+
+    # ---------- A2S 直连 ----------
+    async def _query_via_a2s(self, alias, ip: str, port: int) -> dict:
         """查询单台服务器信息（a2s.info + a2s.players），返回字典。
         失败时带 online=False 与 err 说明，不影响其他服务器查询。
         """
         import time as _time
 
-        base = {"alias": alias, "ip": ip, "port": port}
+        base = {"alias": alias, "ip": ip, "port": port, "source": "a2s"}
         started = _time.monotonic()
         try:
             loop = asyncio.get_running_loop()
@@ -933,7 +1192,7 @@ class GModServerQuery(Star):
         }
 
     async def _render_via_custom_endpoint(self, tmpl: str, data: dict, endpoint: str) -> str:
-        """直接调用指定的 text2img 端点渲染（用于本地 T2I / 自定义端点）。
+        """直接调用指定的 text2img 端点渲染（用于自定义 T2I 端点）。
 
         与 AstrBot NetworkRenderStrategy 的协议保持一致：
             POST {endpoint}/generate  {"tmpl":..., "tmpldata":..., "json":True, "options":...}
@@ -965,24 +1224,24 @@ class GModServerQuery(Star):
     async def _render_html(self, tmpl: str, data: dict) -> str:
         """统一渲染入口，渲染优先级（可配置）：
 
-            prefer_local_t2i = false（默认）: 外部 T2I → 本地 T2I → 抛异常（由调用方回退文字）
-            prefer_local_t2i = true          : 本地 T2I → 外部 T2I → 抛异常
+            prefer_custom_t2i = false（默认）: 外部 T2I → 自定义 T2I → 抛异常（由调用方回退文字）
+            prefer_custom_t2i = true          : 自定义 T2I → 外部 T2I → 抛异常
 
-        未配置本地 T2I 地址时，本地环节自动跳过。
+        未配置自定义 T2I 地址时，自定义环节自动跳过。
         """
-        local = self._local_t2i()
+        custom = self._custom_t2i()
         errors = []
 
-        async def _try_local():
-            if not local:
+        async def _try_custom():
+            if not custom:
                 return None
             try:
-                url = await self._render_via_custom_endpoint(tmpl, data, local)
-                logger.info(f"[gmod] 已用本地 T2I 渲染: {local}")
+                url = await self._render_via_custom_endpoint(tmpl, data, custom)
+                logger.info(f"[gmod] 已用自定义 T2I 渲染: {custom}")
                 return url
             except Exception as e:
-                errors.append(f"本地T2I({local}): {e}")
-                logger.warning(f"[gmod] 本地 T2I 渲染失败: {e}")
+                errors.append(f"自定义T2I({custom}): {e}")
+                logger.warning(f"[gmod] 自定义 T2I 渲染失败: {e}")
                 return None
 
         async def _try_remote():
@@ -1001,13 +1260,13 @@ class GModServerQuery(Star):
                 logger.warning(f"[gmod] 外部 T2I 渲染失败: {e}")
                 return None
 
-        order = [_try_local, _try_remote] if self._prefer_local_t2i() else [_try_remote, _try_local]
+        order = [_try_custom, _try_remote] if self._prefer_custom_t2i() else [_try_remote, _try_custom]
         for fn in order:
             url = await fn()
             if url:
                 return url
 
-        raise RuntimeError("渲染失败（外部/本地 T2I 均不可用）: " + " | ".join(errors))
+        raise RuntimeError("渲染失败（外部/自定义 T2I 均不可用）: " + " | ".join(errors))
 
     # ==================== 单服务器详情渲染图 ====================
     async def _render_detail_image(self, alias, ip: str, port: int) -> str:
@@ -1176,7 +1435,7 @@ class GModServerQuery(Star):
     def _render_fail_hint(self, err: Exception) -> str:
         """渲染失败时给用户的说明（区分 T2I 故障与其他问题）。"""
         if self._is_t2i_error(err):
-            return "（图片渲染服务暂时不可用，已改用文字显示。可稍后再试，或在 AstrBot 中配置本地 t2i）"
+            return "（图片渲染服务暂时不可用，已改用文字显示。可稍后再试，或在 AstrBot 中配置自定义 t2i）"
         return "（图片渲染失败，已改用文字显示）"
 
     # ==================== 帮助文本 ====================
@@ -1184,7 +1443,7 @@ class GModServerQuery(Star):
         listen = "✅ 已开启" if self._listen_enabled() else "❌ 已关闭"
         render = "✅ 已开启" if self._render_enabled() else "❌ 已关闭"
         return (
-            "🎮 GMod 服务器查询插件 v1.0\n"
+            "🎮 GMod 服务器查询插件 v1.2\n"
             "──────────────────────────\n"
             "所有成员可用:\n"
             "  /gmod <IP> [端口]   直接查询\n"
@@ -1342,6 +1601,103 @@ class GModServerQuery(Star):
             yield event.plain_result("❌ 仅管理员可用。")
             return
         yield event.plain_result(self._list_text())
+
+    # ==================== LLM 函数工具 ====================
+    # 设计要点：
+    #  - 只读工具：只提供「列出」与「查询」，不含增删，避免 LLM 误改数据。
+    #  - 图片直发：工具内通过 send_message 把渲染图直接发给用户，
+    #    返回值只带紧凑文本给 LLM，避免数据被复述一遍。
+    #  - 吐槽交给 LLM：工具描述里引导模型在图之后自行决定是否补一句短评。
+    @filter.llm_tool(name="gmod_list_servers")
+    async def llm_list_servers(self, event: AstrMessageEvent) -> str:
+        """列出本插件已保存的所有 GMod 服务器别名与地址。当用户想知道有哪些服务器可以查询、或询问服务器列表时调用。
+
+Args:
+    无
+
+Returns:
+    每个服务器的别名与地址，以及当前是否在线。
+"""
+        if not self.servers:
+            return "当前没有保存任何服务器。请提示用户先用 /gmod-admin add <别名> <IP> [端口] 添加。"
+
+        results = await self._query_all()
+        lines = []
+        for info in results:
+            alias = info.get("alias") or ""
+            addr = f"{info.get('ip')}:{info.get('port')}"
+            if info.get("online"):
+                lines.append(
+                    f"{alias} | {addr} | 在线 | {info.get('players', 0)}/{info.get('max_players', 0)}人"
+                )
+            else:
+                lines.append(f"{alias} | {addr} | 离线（{info.get('err', '未知')}）")
+        return "\n".join(lines)
+
+    @filter.llm_tool(name="gmod_query_server")
+    async def llm_query_server(
+        self,
+        event: AstrMessageEvent,
+        target: str,
+        port: int = 0,
+    ) -> str:
+        """查询一台 GMod 服务器的实时状态，并把结果图直接发送给用户。当用户想知道某台服务器的在线人数、地图、延迟等信息时调用。不要在回答里重复这里返回的数据，系统已经把结果图发给用户了。
+
+Args:
+    target(string): 服务器别名，或 IP/域名地址
+    port(number): 端口，仅在 target 是 IP/域名 且用户明确指定端口时填写；留 0 使用默认端口
+
+Returns:
+    一行紧凑的服务器状态摘要，用于你判断是否值得补一句短评。
+"""
+        target = (target or "").strip()
+        if not target:
+            return "查询失败：target 为空。"
+
+        # 1) 先按别名精确匹配，再按地址处理
+        if target in self.servers:
+            srv = self.servers[target]
+            alias, ip, qport = target, srv["ip"], srv["port"]
+        elif self._looks_like_address(target):
+            alias, ip = None, target
+            qport = int(port) if port else self._default_port()
+        else:
+            # 大小写不敏感兜底，常见于 LLM 把别名小写化
+            lowered = {k.lower(): k for k in self.servers}
+            matched = lowered.get(target.lower())
+            if matched:
+                srv = self.servers[matched]
+                alias, ip, qport = matched, srv["ip"], srv["port"]
+            else:
+                names = "、".join(self.servers.keys()) or "（无）"
+                return f"未找到别名 [{target}]，也不是有效地址。已保存的别名：{names}"
+
+        # 2) 查询
+        info = await self._query_one(alias, ip, qport)
+        title = alias or f"{ip}:{qport}"
+
+        # 3) 出图并直接发给用户（图在前）
+        if self._render_enabled():
+            try:
+                url = await self._render_detail_image(alias, ip, qport)
+                await self.context.send_message(
+                    event.unified_msg_origin,
+                    MessageChain([Comp.Image(file=url)]),
+                )
+            except Exception as e:
+                logger.error(f"[gmod] LLM 工具渲染/发送失败: {e}")
+
+        # 4) 返回紧凑摘要给 LLM（不含详细玩家列表，减少复述）
+        if not info.get("online"):
+            return f"{title} | 离线（{info.get('err', '未知原因')}）"
+        return (
+            f"{title} | 名称: {info.get('name') or '-'}"
+            f" | 地图: {info.get('map') or '-'}"
+            f" | 人数: {info.get('players', 0)}/{info.get('max_players', 0)}"
+            f" | 延迟: {info.get('ping', '-')}ms"
+            f" | 密码: {'是' if info.get('password') else '否'}"
+            f" | bot: {info.get('bots', 0)}"
+        )
 
     # ==================== 生命周期 ====================
     async def terminate(self):
