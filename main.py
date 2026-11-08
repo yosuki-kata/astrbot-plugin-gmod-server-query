@@ -19,8 +19,10 @@ import ipaddress
 import json
 import os
 import a2s
+import astrbot.api.message_components as Comp  # 消息组件（Comp.Image 等）
 from astrbot.api.all import *
 from astrbot.api.event import filter  # 显式导入 filter，避免与 Python 内置 filter 冲突
+from astrbot.api.event import MessageChain  # 主动发送消息用
 
 
 # ==================== 配置常量 ====================
@@ -1677,15 +1679,13 @@ Returns:
         title = alias or f"{ip}:{qport}"
 
         # 3) 出图并直接发给用户（图在前）
+        img_sent = False
         if self._render_enabled():
             try:
                 url = await self._render_detail_image(alias, ip, qport)
-                await self.context.send_message(
-                    event.unified_msg_origin,
-                    MessageChain([Comp.Image(file=url)]),
-                )
+                img_sent = await self._send_image(event.unified_msg_origin, url)
             except Exception as e:
-                logger.error(f"[gmod] LLM 工具渲染/发送失败: {e}")
+                logger.error(f"[gmod] LLM 工具渲染失败: {e}")
 
         # 4) 返回紧凑摘要给 LLM（不含详细玩家列表，减少复述）
         if not info.get("online"):
@@ -1697,7 +1697,24 @@ Returns:
             f" | 延迟: {info.get('ping', '-')}ms"
             f" | 密码: {'是' if info.get('password') else '否'}"
             f" | bot: {info.get('bots', 0)}"
+            + ("" if img_sent else " | 【注意】结果图发送失败，请把上面的数据用简短的文字告诉用户")
         )
+
+    async def _send_image(self, umo: str, url: str) -> bool:
+        """主动把图片发到指定会话，返回是否发送成功。
+
+        渲染结果可能是 http(s) URL，也可能是本地路径，分别用 fromURL / fromFileSystem。
+        """
+        try:
+            if url.startswith("http://") or url.startswith("https://"):
+                comp = Comp.Image.fromURL(url)
+            else:
+                comp = Comp.Image.fromFileSystem(url)
+            await self.context.send_message(umo, MessageChain([comp]))
+            return True
+        except Exception as e:
+            logger.error(f"[gmod] 图片发送失败: {e}")
+            return False
 
     # ==================== 生命周期 ====================
     async def terminate(self):
